@@ -1,4 +1,4 @@
-# Deploy hex-pwa to GitHub Pages
+# Deploy hex-pwa to GitHub Pages with auto-incremented version numbers
 name: Deploy to GitHub Pages
 
 on:
@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - 'hex-pwa/**'
+      - '.github/workflows/deploy-pages.yml'
   workflow_dispatch:  # Allow manual trigger
 
 permissions:
@@ -27,6 +28,21 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Auto-increment Version & SW Cache
+        run: |
+          BUILD_NUM=${{ github.run_number }}
+          VERSION="v2.1.${BUILD_NUM}"
+          echo "Deploying Version: ${VERSION} | SW Cache: v${BUILD_NUM}"
+          
+          # Update version badge in index.html
+          sed -i "s/class=\"version-badge\">v[0-9.]*</class=\"version-badge\">${VERSION}</g" hex-pwa/index.html
+          
+          # Update version badge in index.html info modal text
+          sed -i "s/Version Badge (v[0-9.]*)/Version Badge (${VERSION})/g" hex-pwa/index.html
+          
+          # Update CACHE_VERSION in sw.js to ensure immediate PWA self-update
+          sed -i "s/const CACHE_VERSION = 'v[0-9.]*';/const CACHE_VERSION = 'v${BUILD_NUM}';/g" hex-pwa/sw.js
 
       - name: Setup Pages
         uses: actions/configure-pages@v5
