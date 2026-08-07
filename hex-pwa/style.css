@@ -337,12 +337,19 @@ body {
     gap: 8px;
 }
 
+.action-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+    transform: none !important;
+    box-shadow: none !important;
+}
+
 .restart-btn {
     color: var(--bg-primary);
     background: var(--accent);
 }
 
-.restart-btn:hover {
+.restart-btn:hover:not(:disabled) {
     background: var(--accent-hover);
     box-shadow: 0 0 20px rgba(0, 255, 255, 0.4);
     transform: translateY(-1px);
@@ -354,7 +361,7 @@ body {
     border: 1px solid var(--accent-dim);
 }
 
-.pause-btn:hover {
+.pause-btn:hover:not(:disabled) {
     background: var(--bg-card-hover);
     border-color: var(--accent);
     box-shadow: 0 0 14px rgba(0, 255, 255, 0.25);
@@ -367,13 +374,26 @@ body {
     color: #ffd700;
 }
 
+.stop-btn {
+    color: #ffaa00;
+    background: var(--bg-card);
+    border: 1px solid rgba(255, 170, 0, 0.5);
+}
+
+.stop-btn:hover:not(:disabled) {
+    background: var(--bg-card-hover);
+    border-color: #ffaa00;
+    box-shadow: 0 0 14px rgba(255, 170, 0, 0.3);
+    transform: translateY(-1px);
+}
+
 .info-btn {
     color: var(--text-primary);
     background: var(--bg-card);
     border: 1px solid var(--border);
 }
 
-.info-btn:hover {
+.info-btn:hover:not(:disabled) {
     background: var(--bg-card-hover);
     border-color: var(--accent-dim);
     transform: translateY(-1px);
@@ -385,14 +405,14 @@ body {
     border: 1px solid var(--accent-dim);
 }
 
-.install-btn:hover {
+.install-btn:hover:not(:disabled) {
     background: var(--bg-card-hover);
     border-color: var(--accent);
     box-shadow: 0 0 16px rgba(0, 255, 255, 0.25);
     transform: translateY(-1px);
 }
 
-.action-btn:active {
+.action-btn:active:not(:disabled) {
     transform: translateY(0);
     box-shadow: none;
 }

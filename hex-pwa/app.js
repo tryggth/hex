@@ -32,6 +32,7 @@ const cValue = document.getElementById('cValue');
 
 const restartBtn = document.getElementById('restartBtn');
 const pauseBtn = document.getElementById('pauseBtn');
+const stopBtn = document.getElementById('stopBtn');
 const installBtn = document.getElementById('installBtn');
 
 const cosmicPanel = document.getElementById('cosmicPanel');
@@ -68,6 +69,12 @@ function updateLayoutGeometry(boardSize) {
     
     offsetX = (canvas.width - boardPixelW) / 2 + hexW / 2;
     offsetY = (canvas.height - boardPixelH) / 2 + hexSize;
+}
+
+function updateButtonStates() {
+    let isAITurn = mcts ? mcts.isRunning : false;
+    if (pauseBtn) pauseBtn.disabled = !isAITurn;
+    if (stopBtn) stopBtn.disabled = !isAITurn;
 }
 
 // Slider event listeners
@@ -336,6 +343,7 @@ class MCTS {
         this.root = null;
         this.isRunning = false;
         this.isPaused = false;
+        this.isAborted = false;
         this.accumulatedTime = 0;
     }
 
@@ -343,10 +351,13 @@ class MCTS {
         this.root = new MCTSNode(state);
         this.isRunning = true;
         this.isPaused = false;
+        this.isAborted = false;
         this.accumulatedTime = 0;
         let cParam = cSlider ? parseFloat(cSlider.value) : 1.4;
         let lastTime = performance.now();
         
+        updateButtonStates();
+
         return new Promise((resolve) => {
             let iter = () => {
                 let now = performance.now();
@@ -355,25 +366,32 @@ class MCTS {
                 }
                 lastTime = now;
 
+                // Stop strategizing / Abort OR time budget reached
+                if (this.isAborted || this.accumulatedTime >= timeLimitMs) {
+                    this.isRunning = false;
+                    this.isPaused = false;
+                    this.isAborted = false;
+                    updateButtonStates();
+
+                    let bestNode = null;
+                    let maxVisits = -1;
+                    if (this.root && this.root.children) {
+                        for (let child of this.root.children) {
+                            if (child.visits > maxVisits) {
+                                maxVisits = child.visits;
+                                bestNode = child;
+                            }
+                        }
+                    }
+                    resolve(bestNode ? bestNode.move : -1);
+                    return;
+                }
+
                 if (this.isPaused) {
                     // Halts iterations, keeps heatmap frozen, updates panel
                     render(state, this.root);
                     updateCosmicPanel();
                     setTimeout(iter, 100);
-                    return;
-                }
-
-                if (this.accumulatedTime >= timeLimitMs) {
-                    this.isRunning = false;
-                    let bestNode = null;
-                    let maxVisits = -1;
-                    for (let child of this.root.children) {
-                        if (child.visits > maxVisits) {
-                            maxVisits = child.visits;
-                            bestNode = child;
-                        }
-                    }
-                    resolve(bestNode ? bestNode.move : -1);
                     return;
                 }
                 
@@ -608,11 +626,14 @@ let mcts = new MCTS();
 
 function resetGame(size = currentBoardSize) {
     mcts.isPaused = false;
+    mcts.isAborted = false;
+    mcts.isRunning = false;
     if (pauseBtn) {
         pauseBtn.textContent = '⏸️ Pause AI';
         pauseBtn.classList.remove('paused');
     }
     if (cosmicPanel) cosmicPanel.style.display = 'none';
+    updateButtonStates();
 
     gameState = new HexBoard(size);
     if (statusText) {
@@ -666,6 +687,7 @@ async function handleMove(idx) {
             statusText.textContent = '🔴 Red wins!';
             statusText.className = 'status-text win-red';
         }
+        updateButtonStates();
         return;
     }
     
@@ -677,6 +699,8 @@ async function handleMove(idx) {
     
     let durationMs = timeSlider ? parseInt(timeSlider.value) : 1500;
     let aiMove = await mcts.search(gameState, durationMs);
+    
+    // Process AI Move
     if (aiMove !== -1) {
         gameState.play(aiMove);
     }
@@ -693,6 +717,7 @@ async function handleMove(idx) {
             statusText.className = 'status-text';
         }
     }
+    updateButtonStates();
 }
 
 // --- EVENT LISTENERS ---
@@ -719,6 +744,7 @@ if (restartBtn) {
 
 if (pauseBtn) {
     pauseBtn.addEventListener('click', () => {
+        if (!mcts.isRunning) return;
         mcts.isPaused = !mcts.isPaused;
         if (mcts.isPaused) {
             pauseBtn.textContent = '▶️ Resume AI';
@@ -741,6 +767,19 @@ if (pauseBtn) {
                 statusText.className = 'status-text';
             }
         }
+    });
+}
+
+if (stopBtn) {
+    stopBtn.addEventListener('click', () => {
+        if (!mcts.isRunning) return;
+        mcts.isAborted = true;
+        mcts.isPaused = false;
+        if (pauseBtn) {
+            pauseBtn.textContent = '⏸️ Pause AI';
+            pauseBtn.classList.remove('paused');
+        }
+        if (cosmicPanel) cosmicPanel.style.display = 'none';
     });
 }
 
@@ -818,5 +857,6 @@ if (statusText) statusText.textContent = 'Your turn — place a Red stone';
 if (boardSizeSlider && boardSizeValue) boardSizeValue.textContent = `${initialSize}×${initialSize}`;
 if (timeSlider && timeValue) timeValue.textContent = `${timeSlider ? timeSlider.value : 1500}ms`;
 if (cSlider && cValue) cValue.textContent = parseFloat(cSlider.value).toFixed(2);
+updateButtonStates();
 
 render(gameState);
