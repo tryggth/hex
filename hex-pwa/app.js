@@ -31,7 +31,13 @@ const cSlider = document.getElementById('cSlider');
 const cValue = document.getElementById('cValue');
 
 const restartBtn = document.getElementById('restartBtn');
+const pauseBtn = document.getElementById('pauseBtn');
 const installBtn = document.getElementById('installBtn');
+
+const cosmicPanel = document.getElementById('cosmicPanel');
+const mctsNodesCount = document.getElementById('mctsNodesCount');
+const cosmicPathsCount = document.getElementById('cosmicPathsCount');
+const cosmicScaleText = document.getElementById('cosmicScaleText');
 
 // Dynamic geometry state
 let currentBoardSize = 7;
@@ -87,6 +93,63 @@ if (cSlider) {
     cSlider.addEventListener('input', () => {
         if (cValue) cValue.textContent = parseFloat(cSlider.value).toFixed(2);
     });
+}
+
+// --- MATH & COSMIC SCALE HELPERS ---
+
+/**
+ * Calculates E! (E factorial) of remaining empty cells using base-10 logarithms to prevent overflow.
+ * @param {number} emptyCells - Number of empty cells remaining on the board (E)
+ * @returns {object} { formatted: string, exponent: number, mantissa: number }
+ */
+function calculatePaths(emptyCells) {
+    if (emptyCells <= 0) return { formatted: "1", exponent: 0, mantissa: 1 };
+    let sumLog10 = 0;
+    for (let i = 1; i <= emptyCells; i++) {
+        sumLog10 += Math.log10(i);
+    }
+    let exponent = Math.floor(sumLog10);
+    let mantissa = Math.pow(10, sumLog10 - exponent);
+
+    // Map digits to unicode superscripts for scientific notation display
+    let superscripts = {
+        '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
+        '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹', '-': '⁻'
+    };
+    let expStr = exponent.toString().split('').map(char => superscripts[char] || char).join('');
+    let formatted = `${mantissa.toFixed(2)} × 10${expStr}`;
+
+    return { formatted, exponent, mantissa };
+}
+
+/**
+ * Returns a universe comparison string based on the base-10 exponent of E!.
+ * @param {number} exponent - The base-10 exponent
+ * @returns {string} Universe comparison string
+ */
+function getCosmicScale(exponent) {
+    if (exponent >= 185) return "More than the Planck volumes in the observable universe.";
+    if (exponent >= 120) return "More than the Shannon Number (all possible Chess games).";
+    if (exponent >= 80) return "More than the atoms in the observable universe.";
+    if (exponent >= 67) return "More than the atoms in the Milky Way galaxy.";
+    if (exponent >= 50) return "More than the atoms making up the Earth.";
+    if (exponent >= 25) return "More than the drops of water in all Earth's oceans.";
+    if (exponent >= 18) return "More than all the grains of sand on Earth.";
+    if (exponent >= 11) return "More than the stars in our galaxy.";
+    if (exponent >= 9)  return "More than the human population of Earth.";
+    return "A number a standard computer could brute-force.";
+}
+
+function updateCosmicPanel() {
+    let emptyCells = gameState.getLegalMoves().length;
+    let pathInfo = calculatePaths(emptyCells);
+    let scaleStr = getCosmicScale(pathInfo.exponent);
+
+    let nodes = (mcts.root && mcts.root.visits) ? mcts.root.visits : 0;
+
+    if (mctsNodesCount) mctsNodesCount.textContent = nodes.toLocaleString();
+    if (cosmicPathsCount) cosmicPathsCount.textContent = pathInfo.formatted;
+    if (cosmicScaleText) cosmicScaleText.textContent = scaleStr;
 }
 
 // --- UNION FIND ---
@@ -272,17 +335,35 @@ class MCTS {
     constructor() {
         this.root = null;
         this.isRunning = false;
+        this.isPaused = false;
+        this.accumulatedTime = 0;
     }
 
     async search(state, timeLimitMs) {
         this.root = new MCTSNode(state);
         this.isRunning = true;
+        this.isPaused = false;
+        this.accumulatedTime = 0;
         let cParam = cSlider ? parseFloat(cSlider.value) : 1.4;
-        let startTime = performance.now();
+        let lastTime = performance.now();
         
         return new Promise((resolve) => {
             let iter = () => {
-                if (performance.now() - startTime >= timeLimitMs) {
+                let now = performance.now();
+                if (!this.isPaused) {
+                    this.accumulatedTime += (now - lastTime);
+                }
+                lastTime = now;
+
+                if (this.isPaused) {
+                    // Halts iterations, keeps heatmap frozen, updates panel
+                    render(state, this.root);
+                    updateCosmicPanel();
+                    setTimeout(iter, 100);
+                    return;
+                }
+
+                if (this.accumulatedTime >= timeLimitMs) {
                     this.isRunning = false;
                     let bestNode = null;
                     let maxVisits = -1;
@@ -303,6 +384,7 @@ class MCTS {
                 }
                 
                 render(state, this.root);
+                updateCosmicPanel();
                 setTimeout(iter, 0);
             };
             iter();
@@ -525,6 +607,13 @@ let gameState = new HexBoard(initialSize);
 let mcts = new MCTS();
 
 function resetGame(size = currentBoardSize) {
+    mcts.isPaused = false;
+    if (pauseBtn) {
+        pauseBtn.textContent = '⏸️ Pause AI';
+        pauseBtn.classList.remove('paused');
+    }
+    if (cosmicPanel) cosmicPanel.style.display = 'none';
+
     gameState = new HexBoard(size);
     if (statusText) {
         statusText.textContent = 'Your turn — place a Red stone';
@@ -582,8 +671,8 @@ async function handleMove(idx) {
     
     // AI play
     if (statusText) {
-        statusText.textContent = '🔵 Blue AI thinking...';
-        statusText.className = 'status-text thinking';
+        statusText.textContent = mcts.isPaused ? '⏸️ AI Paused — Inspecting MCTS Search' : '🔵 Blue AI thinking...';
+        statusText.className = mcts.isPaused ? 'status-text paused' : 'status-text thinking';
     }
     
     let durationMs = timeSlider ? parseInt(timeSlider.value) : 1500;
@@ -609,14 +698,14 @@ async function handleMove(idx) {
 // --- EVENT LISTENERS ---
 if (canvas) {
     canvas.addEventListener('click', (e) => {
-        if (mcts.isRunning) return;
+        if (mcts.isRunning && !mcts.isPaused) return;
         let idx = getEventHex(e);
         handleMove(idx);
     });
 
     canvas.addEventListener('touchstart', (e) => {
         e.preventDefault();
-        if (mcts.isRunning) return;
+        if (mcts.isRunning && !mcts.isPaused) return;
         let idx = getEventHex(e);
         handleMove(idx);
     }, {passive: false});
@@ -624,8 +713,34 @@ if (canvas) {
 
 if (restartBtn) {
     restartBtn.addEventListener('click', () => {
-        if (mcts.isRunning) return;
         resetGame(currentBoardSize);
+    });
+}
+
+if (pauseBtn) {
+    pauseBtn.addEventListener('click', () => {
+        mcts.isPaused = !mcts.isPaused;
+        if (mcts.isPaused) {
+            pauseBtn.textContent = '▶️ Resume AI';
+            pauseBtn.classList.add('paused');
+            if (cosmicPanel) cosmicPanel.style.display = 'flex';
+            if (statusText) {
+                statusText.textContent = '⏸️ AI Paused — Inspecting MCTS Search';
+                statusText.className = 'status-text paused';
+            }
+            updateCosmicPanel();
+        } else {
+            pauseBtn.textContent = '⏸️ Pause AI';
+            pauseBtn.classList.remove('paused');
+            if (cosmicPanel) cosmicPanel.style.display = 'none';
+            if (statusText && mcts.isRunning) {
+                statusText.textContent = '🔵 Blue AI thinking...';
+                statusText.className = 'status-text thinking';
+            } else if (statusText) {
+                statusText.textContent = 'Your turn — place a Red stone';
+                statusText.className = 'status-text';
+            }
+        }
     });
 }
 

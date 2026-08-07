@@ -34,7 +34,7 @@
                 <canvas id="hexCanvas" width="580" height="520"></canvas>
             </div>
 
-            <!-- Right: Side Panel (Status, Sliders, Buttons) -->
+            <!-- Right: Side Panel (Status, Sliders, Cosmic Panel, Buttons) -->
             <div class="side-panel">
                 <!-- Status Display -->
                 <div id="statusText" class="status-text">Your turn — place a Red stone</div>
@@ -60,9 +60,32 @@
                     </div>
                 </div>
 
+                <!-- The Combinatorial Explosion Panel -->
+                <div id="cosmicPanel" class="cosmic-panel" style="display: none;">
+                    <div class="cosmic-header">
+                        ✨ <span>The Combinatorial Explosion</span>
+                    </div>
+                    <div class="cosmic-content">
+                        <div class="cosmic-row">
+                            <span class="cosmic-label">Nodes Explored by MCTS:</span>
+                            <span id="mctsNodesCount" class="cosmic-val">0</span>
+                        </div>
+                        <div class="cosmic-row">
+                            <span class="cosmic-label">Total Possible Paths Remaining (E!):</span>
+                            <span id="cosmicPathsCount" class="cosmic-val">1.24 × 10⁶¹</span>
+                        </div>
+                        <div class="cosmic-row cosmic-scale-row">
+                            <span class="cosmic-label">Cosmic Scale:</span>
+                            <span id="cosmicScaleText" class="cosmic-scale-val">More than the atoms in the observable universe.</span>
+                        </div>
+                        <p class="cosmic-subtext">Exhaustive search is impossible. MCTS samples a tiny fraction of these futures to find the optimal path.</p>
+                    </div>
+                </div>
+
                 <!-- Action Buttons -->
                 <div class="button-group">
                     <button id="restartBtn" class="action-btn restart-btn">Restart Game</button>
+                    <button id="pauseBtn" class="action-btn pause-btn">⏸️ Pause AI</button>
                     <button id="infoBtn" class="action-btn info-btn">📖 How It Works</button>
                     <button id="installBtn" class="action-btn install-btn" style="display: none;">📥 Install App</button>
                 </div>
@@ -155,6 +178,8 @@
                 <p><strong>C. Action Buttons:</strong></p>
                 <ul>
                     <li><strong>Restart Game Button:</strong> Resets the current board state and starts a fresh game at the chosen board size.</li>
+                    <li><strong>⏸️ Pause AI Button:</strong> Pauses MCTS search iterations, freezes heatmap numbers, and reveals the Combinatorial Explosion cosmic scale calculation.</li>
+                    <li><strong>Restart Game / Info Buttons:</strong> Easy access to control board state and view documentation.</li>
                     <li><strong>📥 Install App Button:</strong> Displays automatically on supporting browsers when the app is installable as a native desktop/mobile application.</li>
                 </ul>
             </div>
