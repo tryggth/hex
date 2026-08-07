@@ -1,16 +1,6 @@
 'use strict';
 
-// --- CONSTANTS ---
-const BOARD_SIZE = 7;
-const NUM_CELLS = BOARD_SIZE * BOARD_SIZE;
-
-// Sentinels for Union-Find win detection
-const RED_TOP = 49;
-const RED_BOTTOM = 50;
-const BLUE_LEFT = 51;
-const BLUE_RIGHT = 52;
-
-// Hex neighbor directions (offset coordinates)
+// --- HEX NEIGHBOR DIRECTIONS (offset coordinates) ---
 const HEX_DIRS = [[-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0]];
 
 // Colors
@@ -22,25 +12,76 @@ const COLOR_BLUE = '#4488FF';
 
 // Player IDs
 const EMPTY = 0;
-const RED = 1; // Human, connects Top-to-Bottom
+const RED = 1;  // Human, connects Top-to-Bottom
 const BLUE = 2; // AI, connects Left-to-Right
 
 // --- UI ELEMENTS ---
 const canvas = document.getElementById('hexCanvas');
-const ctx = canvas.getContext('2d');
+const ctx = canvas ? canvas.getContext('2d') : null;
 const statusText = document.getElementById('statusText');
+const headerSubtitle = document.getElementById('headerSubtitle');
+
+const boardSizeSlider = document.getElementById('boardSizeSlider');
+const boardSizeValue = document.getElementById('boardSizeValue');
+
+const timeSlider = document.getElementById('timeSlider');
+const timeValue = document.getElementById('timeValue');
+
 const cSlider = document.getElementById('cSlider');
 const cValue = document.getElementById('cValue');
+
 const restartBtn = document.getElementById('restartBtn');
 
-// Hex layout parameters (assuming 580x520 canvas)
-const HEX_SIZE = 28;
-const HEX_W = Math.sqrt(3) * HEX_SIZE;
-const HEX_H = 2 * HEX_SIZE;
-const OFFSET_X = 60;
-const OFFSET_Y = 60;
+// Dynamic geometry state
+let currentBoardSize = 7;
+let hexSize = 28;
+let hexW = Math.sqrt(3) * hexSize;
+let hexH = 2 * hexSize;
+let offsetX = 60;
+let offsetY = 60;
 
-// Update UI slider value display
+function updateLayoutGeometry(boardSize) {
+    currentBoardSize = boardSize;
+    if (!canvas) return;
+    let availW = canvas.width - 40;  // 540
+    let availH = canvas.height - 40; // 480
+    
+    let totalWFactor = Math.sqrt(3) * (1.5 * boardSize - 0.5);
+    let totalHFactor = 1.5 * boardSize + 0.5;
+    
+    let sizeW = availW / totalWFactor;
+    let sizeH = availH / totalHFactor;
+    hexSize = Math.min(sizeW, sizeH);
+    
+    hexW = Math.sqrt(3) * hexSize;
+    hexH = 2 * hexSize;
+    
+    let boardPixelW = hexW * (1.5 * boardSize - 0.5);
+    let boardPixelH = (1.5 * boardSize + 0.5) * hexSize;
+    
+    offsetX = (canvas.width - boardPixelW) / 2 + hexW / 2;
+    offsetY = (canvas.height - boardPixelH) / 2 + hexSize;
+}
+
+// Slider event listeners
+if (boardSizeSlider) {
+    boardSizeSlider.addEventListener('input', () => {
+        let size = parseInt(boardSizeSlider.value);
+        if (boardSizeValue) boardSizeValue.textContent = `${size}×${size}`;
+        if (headerSubtitle) headerSubtitle.textContent = `Human (Red) vs AI (Blue) · ${size}×${size}`;
+        if (!mcts.isRunning) {
+            resetGame(size);
+        }
+    });
+}
+
+if (timeSlider) {
+    timeSlider.addEventListener('input', () => {
+        let ms = parseInt(timeSlider.value);
+        if (timeValue) timeValue.textContent = `${ms}ms`;
+    });
+}
+
 if (cSlider) {
     cSlider.addEventListener('input', () => {
         if (cValue) cValue.textContent = parseFloat(cSlider.value).toFixed(2);
@@ -63,7 +104,6 @@ class UnionFind {
         while (root !== this.parent[root]) {
             root = this.parent[root];
         }
-        // Path compression
         let curr = i;
         while (curr !== root) {
             let nxt = this.parent[curr];
@@ -77,7 +117,6 @@ class UnionFind {
         let rootI = this.find(i);
         let rootJ = this.find(j);
         if (rootI !== rootJ) {
-            // Union by rank
             if (this.rank[rootI] < this.rank[rootJ]) {
                 this.parent[rootI] = rootJ;
             } else if (this.rank[rootI] > this.rank[rootJ]) {
@@ -92,18 +131,24 @@ class UnionFind {
 
 // --- HEX BOARD STATE ---
 class HexBoard {
-    constructor() {
-        this.board = new Uint8Array(NUM_CELLS);
-        this.uf = new UnionFind(NUM_CELLS + 4); // 49 cells + 4 sentinels
-        // Sentinels are connected to border cells only when a matching-color
-        // stone is placed there — see play() method.
+    constructor(size = 7) {
+        this.size = size;
+        this.numCells = size * size;
+        this.redTop = this.numCells;
+        this.redBottom = this.numCells + 1;
+        this.blueLeft = this.numCells + 2;
+        this.blueRight = this.numCells + 3;
+        
+        this.board = new Uint8Array(this.numCells);
+        this.uf = new UnionFind(this.numCells + 4);
+        
         this.currentPlayer = RED;
         this.winner = EMPTY;
         this.movesMade = 0;
     }
 
     clone() {
-        let copy = new HexBoard();
+        let copy = new HexBoard(this.size);
         copy.board.set(this.board);
         copy.uf.parent.set(this.uf.parent);
         copy.uf.rank.set(this.uf.rank);
@@ -114,30 +159,30 @@ class HexBoard {
     }
 
     coordToIdx(r, c) {
-        return r * BOARD_SIZE + c;
+        return r * this.size + c;
     }
 
     isValid(r, c) {
-        return r >= 0 && r < BOARD_SIZE && c >= 0 && c < BOARD_SIZE;
+        return r >= 0 && r < this.size && c >= 0 && c < this.size;
     }
 
     getWinner() {
-        if (this.uf.find(RED_TOP) === this.uf.find(RED_BOTTOM)) return RED;
-        if (this.uf.find(BLUE_LEFT) === this.uf.find(BLUE_RIGHT)) return BLUE;
+        if (this.uf.find(this.redTop) === this.uf.find(this.redBottom)) return RED;
+        if (this.uf.find(this.blueLeft) === this.uf.find(this.blueRight)) return BLUE;
         return EMPTY;
     }
 
     play(idx) {
         if (this.board[idx] !== EMPTY || this.winner !== EMPTY) return false;
         
-        let r = Math.floor(idx / BOARD_SIZE);
-        let c = idx % BOARD_SIZE;
+        let r = Math.floor(idx / this.size);
+        let c = idx % this.size;
         let player = this.currentPlayer;
         
         this.board[idx] = player;
         this.movesMade++;
         
-        // Connect to neighbors of the same color
+        // Connect to same-color neighbors
         for (let dir of HEX_DIRS) {
             let nr = r + dir[0];
             let nc = c + dir[1];
@@ -149,13 +194,13 @@ class HexBoard {
             }
         }
         
-        // Connect to sentinel nodes for border cells
+        // Connect border cells to sentinels
         if (player === RED) {
-            if (r === 0) this.uf.union(idx, RED_TOP);
-            if (r === BOARD_SIZE - 1) this.uf.union(idx, RED_BOTTOM);
+            if (r === 0) this.uf.union(idx, this.redTop);
+            if (r === this.size - 1) this.uf.union(idx, this.redBottom);
         } else {
-            if (c === 0) this.uf.union(idx, BLUE_LEFT);
-            if (c === BOARD_SIZE - 1) this.uf.union(idx, BLUE_RIGHT);
+            if (c === 0) this.uf.union(idx, this.blueLeft);
+            if (c === this.size - 1) this.uf.union(idx, this.blueRight);
         }
         
         this.winner = this.getWinner();
@@ -165,7 +210,7 @@ class HexBoard {
     
     getLegalMoves() {
         let moves = [];
-        for (let i = 0; i < NUM_CELLS; i++) {
+        for (let i = 0; i < this.numCells; i++) {
             if (this.board[i] === EMPTY) moves.push(i);
         }
         return moves;
@@ -185,7 +230,7 @@ class MCTSNode {
     }
 
     isTerminal() {
-        return this.state.winner !== EMPTY || this.state.movesMade === NUM_CELLS;
+        return this.state.winner !== EMPTY || this.state.movesMade === this.state.numCells;
     }
 
     isFullyExpanded() {
@@ -193,7 +238,6 @@ class MCTSNode {
     }
     
     expand() {
-        // Randomly pick an untried move
         let idx = Math.floor(Math.random() * this.untriedMoves.length);
         let move = this.untriedMoves[idx];
         this.untriedMoves.splice(idx, 1);
@@ -224,27 +268,23 @@ class MCTSNode {
 
 // --- MCTS AGENT ---
 class MCTS {
-    constructor(timeLimitMs) {
-        this.timeLimit = timeLimitMs;
+    constructor() {
         this.root = null;
         this.isRunning = false;
     }
 
-    async search(state) {
+    async search(state, timeLimitMs) {
         this.root = new MCTSNode(state);
         this.isRunning = true;
-        let cParam = cSlider ? parseFloat(cSlider.value) : 1.414;
-        
+        let cParam = cSlider ? parseFloat(cSlider.value) : 1.4;
         let startTime = performance.now();
         
         return new Promise((resolve) => {
             let iter = () => {
-                // Check time budget
-                if (performance.now() - startTime >= this.timeLimit) {
+                if (performance.now() - startTime >= timeLimitMs) {
                     this.isRunning = false;
                     let bestNode = null;
                     let maxVisits = -1;
-                    // Pick child with most visits (robustness)
                     for (let child of this.root.children) {
                         if (child.visits > maxVisits) {
                             maxVisits = child.visits;
@@ -255,14 +295,12 @@ class MCTS {
                     return;
                 }
                 
-                // Batch iterations to maintain responsiveness
                 for (let i = 0; i < 80; i++) {
                     let node = this.select(this.root, cParam);
                     let winner = this.simulate(node.state);
                     this.backpropagate(node, winner);
                 }
                 
-                // Yield to allow rendering heatmap
                 render(state, this.root);
                 setTimeout(iter, 0);
             };
@@ -284,9 +322,14 @@ class MCTS {
     simulate(state) {
         if (state.winner !== EMPTY) return state.winner;
         
-        // Nash Trick: Fast evaluation by completely filling the board
         let simState = state.clone();
         let empties = simState.getLegalMoves();
+        let size = simState.size;
+        let numCells = simState.numCells;
+        let redTop = numCells;
+        let redBottom = numCells + 1;
+        let blueLeft = numCells + 2;
+        let blueRight = numCells + 3;
         
         // Fisher-Yates shuffle
         for (let i = empties.length - 1; i > 0; i--) {
@@ -296,54 +339,49 @@ class MCTS {
             empties[j] = temp;
         }
         
-        // Fill alternating player moves
         let cur = simState.currentPlayer;
         for (let move of empties) {
             simState.board[move] = cur;
             cur = cur === RED ? BLUE : RED;
         }
         
-        // Evaluate full board with a fresh UnionFind
-        let uf = new UnionFind(NUM_CELLS + 4);
+        let uf = new UnionFind(numCells + 4);
         
-        for (let r = 0; r < BOARD_SIZE; r++) {
-            for (let c = 0; c < BOARD_SIZE; c++) {
-                let idx = r * BOARD_SIZE + c;
+        for (let r = 0; r < size; r++) {
+            for (let c = 0; c < size; c++) {
+                let idx = r * size + c;
                 let p = simState.board[idx];
                 
-                // Connect to same-color neighbors
                 for (let dir of HEX_DIRS) {
                     let nr = r + dir[0];
                     let nc = c + dir[1];
-                    if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE) {
-                        let nidx = nr * BOARD_SIZE + nc;
+                    if (nr >= 0 && nr < size && nc >= 0 && nc < size) {
+                        let nidx = nr * size + nc;
                         if (simState.board[nidx] === p) {
                             uf.union(idx, nidx);
                         }
                     }
                 }
                 
-                // Connect border cells to sentinels (only matching color)
                 if (p === RED) {
-                    if (r === 0) uf.union(idx, RED_TOP);
-                    if (r === BOARD_SIZE - 1) uf.union(idx, RED_BOTTOM);
+                    if (r === 0) uf.union(idx, redTop);
+                    if (r === size - 1) uf.union(idx, redBottom);
                 } else if (p === BLUE) {
-                    if (c === 0) uf.union(idx, BLUE_LEFT);
-                    if (c === BOARD_SIZE - 1) uf.union(idx, BLUE_RIGHT);
+                    if (c === 0) uf.union(idx, blueLeft);
+                    if (c === size - 1) uf.union(idx, blueRight);
                 }
             }
         }
         
-        if (uf.find(RED_TOP) === uf.find(RED_BOTTOM)) return RED;
-        if (uf.find(BLUE_LEFT) === uf.find(BLUE_RIGHT)) return BLUE;
-        return EMPTY; // Should never happen in Hex with a full board
+        if (uf.find(redTop) === uf.find(redBottom)) return RED;
+        if (uf.find(blueLeft) === uf.find(blueRight)) return BLUE;
+        return EMPTY;
     }
 
     backpropagate(node, winner) {
         while (node !== null) {
             node.visits++;
             if (node.parent) {
-                // The move leading to this node was made by parent's currentPlayer
                 let playerWhoMoved = node.parent.state.currentPlayer;
                 if (playerWhoMoved === winner) {
                     node.wins++;
@@ -356,19 +394,17 @@ class MCTS {
 
 // --- RENDERING ---
 function getHexCenter(r, c) {
-    // Parallelogram layout offset right by hex_w / 2 per row
-    let x = OFFSET_X + HEX_W * c + (r * HEX_W) / 2;
-    let y = OFFSET_Y + (r * 3 / 4) * HEX_H;
+    let x = offsetX + hexW * c + (r * hexW) / 2;
+    let y = offsetY + (r * 3 / 4) * hexH;
     return {x, y};
 }
 
 function drawHex(x, y, fillStyle, strokeStyle, lineWidth = 1) {
     ctx.beginPath();
     for (let i = 0; i < 6; i++) {
-        // Pointy-top orientation angles
         let angle = Math.PI / 180 * (60 * i - 30);
-        let px = x + HEX_SIZE * Math.cos(angle);
-        let py = y + HEX_SIZE * Math.sin(angle);
+        let px = x + hexSize * Math.cos(angle);
+        let py = y + hexSize * Math.sin(angle);
         if (i === 0) ctx.moveTo(px, py);
         else ctx.lineTo(px, py);
     }
@@ -396,6 +432,9 @@ function lerpColor(c1, c2, t) {
 function render(state, rootNode = null) {
     if (!ctx) return;
     
+    let size = state.size;
+    updateLayoutGeometry(size);
+    
     // Clear background
     ctx.fillStyle = COLOR_BG;
     ctx.fillRect(0, 0, canvas.width, canvas.height);
@@ -409,11 +448,16 @@ function render(state, rootNode = null) {
         }
     }
 
-    for (let r = 0; r < BOARD_SIZE; r++) {
-        for (let c = 0; c < BOARD_SIZE; c++) {
+    // Font size scaling based on hexSize
+    let numFontSize = Math.max(9, Math.floor(hexSize * 0.32));
+    let mctsFontSize = Math.max(10, Math.floor(hexSize * 0.38));
+
+    for (let r = 0; r < size; r++) {
+        for (let c = 0; c < size; c++) {
             let idx = state.coordToIdx(r, c);
             let player = state.board[idx];
             let {x, y} = getHexCenter(r, c);
+            let cellNum = idx + 1; // 1-based hex number
             
             let fill = COLOR_EMPTY_FILL;
             if (player === RED) fill = COLOR_RED;
@@ -423,9 +467,8 @@ function render(state, rootNode = null) {
             let lw = 1;
 
             if (player === EMPTY) {
-                // Colored border edges for visual cues
-                let isTopOrBottom = r === 0 || r === BOARD_SIZE - 1;
-                let isLeftOrRight = c === 0 || c === BOARD_SIZE - 1;
+                let isTopOrBottom = r === 0 || r === size - 1;
+                let isLeftOrRight = c === 0 || c === size - 1;
                 
                 if (isTopOrBottom) {
                     stroke = COLOR_RED;
@@ -433,7 +476,6 @@ function render(state, rootNode = null) {
                 }
                 if (isLeftOrRight) {
                     if (isTopOrBottom) {
-                        // Corners blend both colors
                         stroke = '#AA44AA';
                     } else {
                         stroke = COLOR_BLUE;
@@ -444,26 +486,51 @@ function render(state, rootNode = null) {
 
             drawHex(x, y, fill, stroke, lw);
 
-            // Heatmap rendering during AI thinking
-            if (player === EMPTY && maxVisits > 0 && visitMap[idx]) {
+            // 1) Render Hex Cell Number
+            let isThinkingWithVisit = (player === EMPTY && maxVisits > 0 && visitMap[idx]);
+            
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            
+            if (player === EMPTY) {
+                ctx.fillStyle = isThinkingWithVisit ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.55)';
+                ctx.font = `${numFontSize}px sans-serif`;
+                let numY = isThinkingWithVisit ? y - hexSize * 0.42 : y;
+                ctx.fillText(cellNum.toString(), x, numY);
+            } else {
+                // Stone is placed — draw subtle cell number
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
+                ctx.font = `bold ${numFontSize}px sans-serif`;
+                ctx.fillText(cellNum.toString(), x, y);
+            }
+
+            // 2) Heatmap rendering during AI thinking (centered below cell number)
+            if (isThinkingWithVisit) {
                 let v = visitMap[idx];
-                // Non-linear scaling for better heatmap contrast
                 let t = Math.pow(v / maxVisits, 0.5); 
-                let color = lerpColor('#1a3a5a', '#00FFFF', t);
+                let color = lerpColor('#3a7ab0', '#00FFFF', t);
                 
                 ctx.fillStyle = color;
-                ctx.font = '12px sans-serif';
-                ctx.textAlign = 'center';
-                ctx.textBaseline = 'middle';
-                ctx.fillText(v.toString(), x, y);
+                ctx.font = `bold ${mctsFontSize}px sans-serif`;
+                ctx.fillText(v.toString(), x, y + hexSize * 0.18);
             }
         }
     }
 }
 
-// --- GAME LOOP ---
-let gameState = new HexBoard();
-let mcts = new MCTS(1500); // 1500ms time budget
+// --- GAME LOOP & STATE ---
+let initialSize = boardSizeSlider ? parseInt(boardSizeSlider.value) : 7;
+let gameState = new HexBoard(initialSize);
+let mcts = new MCTS();
+
+function resetGame(size = currentBoardSize) {
+    gameState = new HexBoard(size);
+    if (statusText) {
+        statusText.textContent = 'Your turn — place a Red stone';
+        statusText.className = 'status-text';
+    }
+    render(gameState);
+}
 
 function getEventHex(e) {
     let rect = canvas.getBoundingClientRect();
@@ -475,14 +542,14 @@ function getEventHex(e) {
     
     let bestDist = Infinity;
     let bestIdx = -1;
+    let size = gameState.size;
     
-    // Find nearest hex center
-    for (let r = 0; r < BOARD_SIZE; r++) {
-        for (let c = 0; c < BOARD_SIZE; c++) {
+    for (let r = 0; r < size; r++) {
+        for (let c = 0; c < size; c++) {
             let {x, y} = getHexCenter(r, c);
             let dx = px - x;
             let dy = py - y;
-            let dist = dx*dx + dy*dy;
+            let dist = dx * dx + dy * dy;
             if (dist < bestDist) {
                 bestDist = dist;
                 bestIdx = gameState.coordToIdx(r, c);
@@ -490,8 +557,7 @@ function getEventHex(e) {
         }
     }
     
-    // Threshold to confirm it's inside the hex
-    if (bestDist <= HEX_SIZE * HEX_SIZE) {
+    if (bestDist <= hexSize * hexSize) {
         return bestIdx;
     }
     return -1;
@@ -519,7 +585,8 @@ async function handleMove(idx) {
         statusText.className = 'status-text thinking';
     }
     
-    let aiMove = await mcts.search(gameState);
+    let durationMs = timeSlider ? parseInt(timeSlider.value) : 1500;
+    let aiMove = await mcts.search(gameState, durationMs);
     if (aiMove !== -1) {
         gameState.play(aiMove);
     }
@@ -557,16 +624,14 @@ if (canvas) {
 if (restartBtn) {
     restartBtn.addEventListener('click', () => {
         if (mcts.isRunning) return;
-        gameState = new HexBoard();
-        if (statusText) {
-            statusText.textContent = 'Your turn — place a Red stone';
-            statusText.className = 'status-text';
-        }
-        render(gameState);
+        resetGame(currentBoardSize);
     });
 }
 
-// Initialize
+// Initialize UI displays and initial render
 if (statusText) statusText.textContent = 'Your turn — place a Red stone';
+if (boardSizeSlider && boardSizeValue) boardSizeValue.textContent = `${initialSize}×${initialSize}`;
+if (timeSlider && timeValue) timeValue.textContent = `${timeSlider ? timeSlider.value : 1500}ms`;
 if (cSlider && cValue) cValue.textContent = parseFloat(cSlider.value).toFixed(2);
+
 render(gameState);

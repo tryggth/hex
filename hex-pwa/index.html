@@ -21,7 +21,7 @@
         <!-- Title Bar -->
         <header class="title-bar">
             <h1>⬡ Hex MCTS</h1>
-            <p class="subtitle">Human (Red) vs AI (Blue) · 7×7</p>
+            <p id="headerSubtitle" class="subtitle">Human (Red) vs AI (Blue) · 7×7</p>
         </header>
 
         <!-- Game Canvas -->
@@ -34,6 +34,16 @@
 
         <!-- Controls -->
         <div class="controls">
+            <div class="slider-group">
+                <label for="boardSizeSlider">Board Size:</label>
+                <input type="range" id="boardSizeSlider" min="5" max="11" step="1" value="7">
+                <span id="boardSizeValue">7×7</span>
+            </div>
+            <div class="slider-group">
+                <label for="timeSlider">Thinking Time:</label>
+                <input type="range" id="timeSlider" min="500" max="5000" step="250" value="1500">
+                <span id="timeValue">1500ms</span>
+            </div>
             <div class="slider-group">
                 <label for="cSlider">Exploration (c):</label>
                 <input type="range" id="cSlider" min="0" max="5" step="0.1" value="1.4">

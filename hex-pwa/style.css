@@ -155,6 +155,7 @@ body {
     color: var(--text-secondary);
     white-space: nowrap;
     flex-shrink: 0;
+    min-width: 105px;
 }
 
 .slider-group input[type="range"] {
@@ -194,10 +195,10 @@ body {
 }
 
 .slider-group span {
-    font-size: 0.95rem;
+    font-size: 0.88rem;
     font-weight: 600;
     color: var(--accent);
-    min-width: 2.2em;
+    min-width: 48px;
     text-align: right;
     font-variant-numeric: tabular-nums;
 }
