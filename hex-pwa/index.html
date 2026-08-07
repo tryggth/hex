@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="description" content="Play Hex against a Monte Carlo Tree Search AI. Installable PWA with live MCTS heatmap visualization.">
+    <meta name="theme-color" content="#00FFFF">
+
+    <title>Hex MCTS — AI Board Game</title>
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192x192.png">
+    <link rel="apple-touch-icon" href="icons/icon-512x512.png">
+
+    <!-- Stylesheet -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Title Bar -->
+        <header class="title-bar">
+            <h1>⬡ Hex MCTS</h1>
+            <p class="subtitle">Human (Red) vs AI (Blue) · 7×7</p>
+        </header>
+
+        <!-- Game Canvas -->
+        <div class="canvas-wrapper">
+            <canvas id="hexCanvas" width="580" height="520"></canvas>
+        </div>
+
+        <!-- Status Display -->
+        <div id="statusText" class="status-text">Your turn — place a Red stone</div>
+
+        <!-- Controls -->
+        <div class="controls">
+            <div class="slider-group">
+                <label for="cSlider">Exploration (c):</label>
+                <input type="range" id="cSlider" min="0" max="5" step="0.1" value="1.4">
+                <span id="cValue">1.4</span>
+            </div>
+            <button id="restartBtn" class="restart-btn">Restart</button>
+        </div>
+
+        <!-- Footer -->
+        <footer class="footer">
+            <p>MCTS with UCT · Nash Trick rollouts · <a href="https://github.com/tryggth/hex" target="_blank">GitHub</a></p>
+        </footer>
+    </div>
+
+    <!-- App Script -->
+    <script src="app.js"></script>
+
+    <!-- Service Worker Registration -->
+    <script>
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('sw.js')
+                .then(reg => console.log('SW registered:', reg.scope))
+                .catch(err => console.warn('SW registration failed:', err));
+
+            // Auto-reload when a new service worker takes control
+            let refreshing = false;
+            navigator.serviceWorker.addEventListener('controllerchange', () => {
+                if (!refreshing) {
+                    refreshing = true;
+                    window.location.reload();
+                }
+            });
+        }
+    </script>
+</body>
+</html>

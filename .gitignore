@@ -1,2 +1,5 @@
-# Generated images
+# Generated presentation images
 *.png
+
+# But track PWA icons (they're needed for deployment)
+!hex-pwa/icons/*.png
