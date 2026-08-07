@@ -63,6 +63,7 @@
                 <!-- Action Buttons -->
                 <div class="button-group">
                     <button id="restartBtn" class="action-btn restart-btn">Restart Game</button>
+                    <button id="infoBtn" class="action-btn info-btn">📖 How It Works</button>
                     <button id="installBtn" class="action-btn install-btn" style="display: none;">📥 Install App</button>
                 </div>
             </div>
@@ -70,8 +71,94 @@
 
         <!-- Footer -->
         <footer class="footer">
-            <p>MCTS with UCT · Nash Trick rollouts · <a href="https://github.com/tryggth/hex" target="_blank">GitHub</a></p>
+            <p>MCTS with UCT · Nash Trick rollouts · <a href="#" id="footerInfoLink">About &amp; Help</a> · <a href="https://github.com/tryggth/hex" target="_blank">GitHub</a></p>
         </footer>
+    </div>
+
+    <!-- Educational Info Modal -->
+    <div id="infoModal" class="modal-overlay" style="display: none;" aria-hidden="true">
+        <div class="modal-content">
+            <button id="closeModalBtn" class="modal-close-btn" aria-label="Close modal">&times;</button>
+            <div class="modal-body">
+                <h2>⬡ Hex MCTS Demo Overview</h2>
+                <p class="modal-intro">An interactive game demonstrating real-time <strong>Monte Carlo Tree Search (MCTS)</strong> for the classic two-player strategy game <strong>Hex</strong>.</p>
+
+                <hr class="modal-divider">
+
+                <h3>1. Overview &amp; Purpose</h3>
+                <p>Hex is a connection game played on a rhombus grid of hexagonal cells. The <strong>Human (Red)</strong> attempts to form an unbroken chain of connected stones from <strong>Top to Bottom</strong>, while the <strong>AI (Blue)</strong> attempts to connect <strong>Left to Right</strong>. In Hex, draws are mathematically impossible.</p>
+                <p>This web application demonstrates how a pure Monte Carlo Tree Search (MCTS) algorithm discovers winning strategies from scratch in real-time—without any pre-computed opening books, lookup tables, or pre-trained models.</p>
+
+                <hr class="modal-divider">
+
+                <h3>2. User Interface (UI) Components Breakdown</h3>
+                <p>The interface is built with a responsive, dark-mode navy/cyan design theme. On desktop screens, it uses a side-by-side split layout, while on mobile devices it gracefully stacks into a clear vertical layout.</p>
+
+                <h4>Header Bar &amp; Version Badge</h4>
+                <ul>
+                    <li><strong>Title:</strong> ⬡ Hex MCTS displayed in glowing electric cyan text.</li>
+                    <li><strong>Version Badge (v2.0):</strong> Located next to the main title in a subtle semi-transparent cyan container.</li>
+                    <li><strong>Dynamic Subtitle:</strong> Displays the active game mode (e.g., <em>Human (Red) vs AI (Blue) · 7×7</em>), updating automatically whenever the board size is changed.</li>
+                </ul>
+
+                <h4>Interactive Hexagonal Board</h4>
+                <ul>
+                    <li><strong>Pointy-Top Hexagonal Grid:</strong> Displays the game board in a classic rhombus shape.</li>
+                    <li><strong>Dynamic Geometry Scaling:</strong> Automatically rescales hex size and centers the grid whether playing on 5×5, 7×7, or 11×11 boards.</li>
+                    <li><strong>Colored Goal Borders:</strong>
+                        <ul>
+                            <li><strong>Red Edges:</strong> Top and Bottom borders are highlighted in warm red (<code>#FF4444</code>).</li>
+                            <li><strong>Blue Edges:</strong> Left and Right borders are highlighted in electric blue (<code>#4488FF</code>).</li>
+                        </ul>
+                    </li>
+                    <li><strong>Interactive Touch &amp; Mouse Support:</strong> Permits both desktop mouse clicks and mobile tap gestures to place stones.</li>
+                </ul>
+
+                <h4>Hex Cell Numbering &amp; Live MCTS Heatmap Overlay</h4>
+                <ul>
+                    <li><strong>1-Based Hex Cell Numbering:</strong> Every cell displays its unique cell number (1…N, where N = size²).
+                        <ul>
+                            <li><strong>On Empty Cells:</strong> Cell numbers appear in a soft, semi-transparent font.</li>
+                            <li><strong>On Occupied Cells:</strong> Cell numbers remain visible over placed stones.</li>
+                        </ul>
+                    </li>
+                    <li><strong>Real-Time Heatmap Visualization:</strong> While the AI thinks:
+                        <ul>
+                            <li>The cell number shifts slightly upward.</li>
+                            <li>A cyan visit count displays prominently in the center of the cell, color-coded from dark blue (low visits) to bright electric cyan (high visits).</li>
+                            <li>The numbers flash and update live as the MCTS engine explores different paths.</li>
+                        </ul>
+                    </li>
+                </ul>
+
+                <h4>Side Control Panel</h4>
+
+                <p><strong>A. Status Display Box:</strong> Shows real-time turn state and outcome notifications:</p>
+                <ul>
+                    <li><code>Your turn — place a Red stone</code> (Normal state)</li>
+                    <li><code>🔵 Blue AI thinking...</code> (Animated pulse effect while MCTS searches)</li>
+                    <li><code>🔴 Red wins!</code> (Highlighted in red)</li>
+                    <li><code>🔵 Blue wins!</code> (Highlighted in blue)</li>
+                </ul>
+
+                <p><strong>B. Parameter Control Sliders:</strong></p>
+                <ol>
+                    <li><strong>Board Size Slider</strong> (Range: 5×5 to 11×11, Default: 7×7): Dynamically reconfigures grid dimensions and resets the board.</li>
+                    <li><strong>Thinking Time Slider</strong> (Range: 500ms to 5000ms, Default: 1500ms): Sets the time budget allocated for the AI to explore moves per turn.</li>
+                    <li><strong>Exploration Parameter (c) Slider</strong> (Range: 0.0 to 5.0, Default: 1.40): Controls the exploration vs. exploitation trade-off in the UCT formula:
+                        <div class="formula-box">
+                            <span class="formula-text">UCT = ( w<sub>i</sub> / n<sub>i</sub> ) + c &times; &radic;( ln N<sub>i</sub> / n<sub>i</sub> )</span>
+                        </div>
+                    </li>
+                </ol>
+
+                <p><strong>C. Action Buttons:</strong></p>
+                <ul>
+                    <li><strong>Restart Game Button:</strong> Resets the current board state and starts a fresh game at the chosen board size.</li>
+                    <li><strong>📥 Install App Button:</strong> Displays automatically on supporting browsers when the app is installable as a native desktop/mobile application.</li>
+                </ul>
+            </div>
+        </div>
     </div>
 
     <!-- App Script -->

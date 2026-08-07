@@ -275,6 +275,18 @@ body {
     transform: translateY(-1px);
 }
 
+.info-btn {
+    color: var(--text-primary);
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+}
+
+.info-btn:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--accent-dim);
+    transform: translateY(-1px);
+}
+
 .install-btn {
     color: var(--accent);
     background: var(--bg-card);
@@ -314,6 +326,164 @@ body {
     color: var(--accent);
 }
 
+/* --- Educational Info Modal --- */
+.modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100vw;
+    height: 100vh;
+    background: rgba(5, 8, 16, 0.85);
+    backdrop-filter: blur(6px);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    opacity: 1;
+    transition: opacity 0.25s ease;
+}
+
+.modal-content {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    width: 100%;
+    max-width: 680px;
+    max-height: 80vh;
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding: 28px 24px 24px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6), var(--glow);
+}
+
+.modal-close-btn {
+    position: absolute;
+    top: 14px;
+    right: 18px;
+    background: transparent;
+    border: none;
+    font-size: 1.8rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+    line-height: 1;
+    padding: 4px 8px;
+    border-radius: 6px;
+    transition: color 0.2s, background 0.2s;
+}
+
+.modal-close-btn:hover {
+    color: var(--accent);
+    background: rgba(0, 255, 255, 0.1);
+}
+
+.modal-body {
+    overflow-y: auto;
+    max-height: calc(80vh - 48px);
+    padding-right: 12px;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    line-height: 1.6;
+}
+
+.modal-body h2 {
+    font-size: 1.4rem;
+    color: var(--accent);
+    margin-bottom: 8px;
+
+    letter-spacing: 0.02em;
+}
+
+.modal-intro {
+    font-size: 0.95rem;
+    color: var(--text-secondary);
+    margin-bottom: 16px;
+}
+
+.modal-divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 16px 0;
+}
+
+.modal-body h3 {
+    font-size: 1.15rem;
+    color: var(--text-primary);
+    margin-top: 16px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid rgba(0, 255, 255, 0.15);
+    padding-bottom: 4px;
+}
+
+.modal-body h4 {
+    font-size: 0.98rem;
+    color: var(--accent);
+    margin-top: 12px;
+    margin-bottom: 6px;
+}
+
+.modal-body p {
+    margin-bottom: 10px;
+    color: var(--text-primary);
+}
+
+.modal-body ul, .modal-body ol {
+    margin-left: 20px;
+    margin-bottom: 12px;
+}
+
+.modal-body li {
+    margin-bottom: 6px;
+    color: var(--text-primary);
+}
+
+.modal-body code {
+    background: rgba(0, 255, 255, 0.08);
+    color: var(--accent);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: monospace;
+    font-size: 0.85rem;
+}
+
+/* Formula Box Styling */
+.formula-box {
+    background: #0d1322;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 6px;
+    padding: 10px 14px;
+    margin: 10px 0;
+    text-align: center;
+}
+
+.formula-text {
+    font-family: 'Cambria Math', 'Georgia', serif;
+    font-size: 1rem;
+    color: var(--accent);
+    letter-spacing: 0.05em;
+}
+
+/* Custom Scrollbar for Modal Body */
+.modal-body::-webkit-scrollbar {
+    width: 6px;
+}
+
+.modal-body::-webkit-scrollbar-track {
+    background: rgba(10, 14, 26, 0.5);
+    border-radius: 3px;
+}
+
+.modal-body::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+.modal-body::-webkit-scrollbar-thumb:hover {
+    background: var(--accent-dim);
+}
+
 /* --- Responsive Layout (Mobile Stacking) --- */
 @media (max-width: 880px) {
     body {
@@ -333,5 +503,14 @@ body {
     #hexCanvas {
         width: 100%;
         height: auto;
+    }
+
+    .modal-content {
+        padding: 20px 16px 16px;
+        max-height: 85vh;
+    }
+
+    .modal-body {
+        max-height: calc(85vh - 40px);
     }
 }

@@ -657,6 +657,47 @@ window.addEventListener('appinstalled', () => {
     console.log('Hex MCTS PWA installed successfully');
 });
 
+// --- MODAL CONTROLLER ---
+const infoBtn = document.getElementById('infoBtn');
+const footerInfoLink = document.getElementById('footerInfoLink');
+const infoModal = document.getElementById('infoModal');
+const closeModalBtn = document.getElementById('closeModalBtn');
+
+function openModal() {
+    if (infoModal) {
+        infoModal.style.display = 'flex';
+        infoModal.setAttribute('aria-hidden', 'false');
+    }
+}
+
+function closeModal() {
+    if (infoModal) {
+        infoModal.style.display = 'none';
+        infoModal.setAttribute('aria-hidden', 'true');
+    }
+}
+
+if (infoBtn) infoBtn.addEventListener('click', openModal);
+if (footerInfoLink) {
+    footerInfoLink.addEventListener('click', (e) => {
+        e.preventDefault();
+        openModal();
+    });
+}
+if (closeModalBtn) closeModalBtn.addEventListener('click', closeModal);
+
+if (infoModal) {
+    infoModal.addEventListener('click', (e) => {
+        if (e.target === infoModal) closeModal();
+    });
+}
+
+window.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && infoModal && infoModal.style.display !== 'none') {
+        closeModal();
+    }
+});
+
 // Initialize UI displays and initial render
 if (statusText) statusText.textContent = 'Your turn — place a Red stone';
 if (boardSizeSlider && boardSizeValue) boardSizeValue.textContent = `${initialSize}×${initialSize}`;
