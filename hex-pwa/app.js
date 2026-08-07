@@ -31,6 +31,7 @@ const cSlider = document.getElementById('cSlider');
 const cValue = document.getElementById('cValue');
 
 const restartBtn = document.getElementById('restartBtn');
+const installBtn = document.getElementById('installBtn');
 
 // Dynamic geometry state
 let currentBoardSize = 7;
@@ -627,6 +628,34 @@ if (restartBtn) {
         resetGame(currentBoardSize);
     });
 }
+
+// --- PWA INSTALLATION HANDLER ---
+let deferredPrompt = null;
+
+window.addEventListener('beforeinstallprompt', (e) => {
+    e.preventDefault();
+    deferredPrompt = e;
+    if (installBtn && !window.matchMedia('(display-mode: standalone)').matches) {
+        installBtn.style.display = 'flex';
+    }
+});
+
+if (installBtn) {
+    installBtn.addEventListener('click', async () => {
+        if (!deferredPrompt) return;
+        deferredPrompt.prompt();
+        const { outcome } = await deferredPrompt.userChoice;
+        console.log(`PWA install prompt choice: ${outcome}`);
+        deferredPrompt = null;
+        installBtn.style.display = 'none';
+    });
+}
+
+window.addEventListener('appinstalled', () => {
+    deferredPrompt = null;
+    if (installBtn) installBtn.style.display = 'none';
+    console.log('Hex MCTS PWA installed successfully');
+});
 
 // Initialize UI displays and initial render
 if (statusText) statusText.textContent = 'Your turn — place a Red stone';

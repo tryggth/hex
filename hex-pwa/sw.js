@@ -7,7 +7,7 @@
  * claim clients, and trigger a controllerchange → page reload.
  */
 
-const CACHE_VERSION = 'v2';
+const CACHE_VERSION = 'v3';
 const CACHE_NAME = `hex-mcts-${CACHE_VERSION}`;
 
 // All assets to pre-cache on install

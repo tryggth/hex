@@ -14,6 +14,7 @@
     --bg-card: #131a2e;
     --bg-card-hover: #1a2340;
     --accent: #00FFFF;
+    --accent-hover: #33ffff;
     --accent-dim: #007a7a;
     --red-player: #FF4444;
     --blue-player: #4488FF;
@@ -40,13 +41,13 @@ body {
     justify-content: center;
     align-items: center;
     -webkit-tap-highlight-color: transparent;
-    overflow: hidden;
+    overflow-x: hidden;
 }
 
 /* --- App Container --- */
 .app-container {
     width: 100%;
-    max-width: 640px;
+    max-width: 980px;
     padding: 20px;
     display: flex;
     flex-direction: column;
@@ -54,9 +55,16 @@ body {
     gap: 16px;
 }
 
-/* --- Title Bar --- */
+/* --- Title Bar & Version Badge --- */
 .title-bar {
     text-align: center;
+}
+
+.title-heading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
 }
 
 .title-bar h1 {
@@ -67,11 +75,32 @@ body {
     text-shadow: 0 0 30px rgba(0, 255, 255, 0.3);
 }
 
+.version-badge {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--accent);
+    background: rgba(0, 255, 255, 0.1);
+    border: 1px solid var(--accent-dim);
+    padding: 2px 8px;
+    border-radius: 12px;
+    letter-spacing: 0.05em;
+}
+
 .title-bar .subtitle {
     font-size: 0.85rem;
     color: var(--text-secondary);
     margin-top: 4px;
     letter-spacing: 0.05em;
+}
+
+/* --- Main Game Layout (Board Left, Sliders Right) --- */
+.game-layout {
+    display: flex;
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 24px;
+    width: 100%;
 }
 
 /* --- Canvas Wrapper --- */
@@ -84,6 +113,7 @@ body {
     display: flex;
     justify-content: center;
     align-items: center;
+    flex-shrink: 0;
 }
 
 #hexCanvas {
@@ -93,6 +123,15 @@ body {
     touch-action: none;
 }
 
+/* --- Side Panel --- */
+.side-panel {
+    display: flex;
+    flex-direction: column;
+    gap: 16px;
+    width: 320px;
+    flex-shrink: 0;
+}
+
 /* --- Status Text --- */
 .status-text {
     font-size: 1.05rem;
@@ -100,12 +139,11 @@ body {
     color: var(--text-primary);
     text-align: center;
     min-height: 1.6em;
-    padding: 8px 16px;
+    padding: 10px 16px;
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 8px;
     width: 100%;
-    max-width: 400px;
     transition: color 0.3s ease;
 }
 
@@ -129,14 +167,12 @@ body {
     50% { opacity: 0.5; }
 }
 
-/* --- Controls --- */
+/* --- Controls & Sliders --- */
 .controls {
     display: flex;
     flex-direction: column;
-    align-items: center;
-    gap: 14px;
+    gap: 12px;
     width: 100%;
-    max-width: 400px;
 }
 
 .slider-group {
@@ -147,15 +183,15 @@ body {
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: 8px;
-    padding: 10px 16px;
+    padding: 10px 14px;
 }
 
 .slider-group label {
-    font-size: 0.85rem;
+    font-size: 0.82rem;
     color: var(--text-secondary);
     white-space: nowrap;
     flex-shrink: 0;
-    min-width: 105px;
+    min-width: 100px;
 }
 
 .slider-group input[type="range"] {
@@ -198,40 +234,68 @@ body {
     font-size: 0.88rem;
     font-weight: 600;
     color: var(--accent);
-    min-width: 48px;
+    min-width: 50px;
     text-align: right;
     font-variant-numeric: tabular-nums;
 }
 
-/* --- Restart Button --- */
-.restart-btn {
-    padding: 10px 36px;
+/* --- Action Buttons --- */
+.button-group {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+
+.action-btn {
+    width: 100%;
+    padding: 12px 20px;
     font-size: 0.95rem;
     font-weight: 600;
-    color: var(--bg-primary);
-    background: var(--accent);
     border: none;
     border-radius: 8px;
     cursor: pointer;
     transition: all 0.2s ease;
     letter-spacing: 0.03em;
     text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+}
+
+.restart-btn {
+    color: var(--bg-primary);
+    background: var(--accent);
 }
 
 .restart-btn:hover {
-    background: #33ffff;
+    background: var(--accent-hover);
     box-shadow: 0 0 20px rgba(0, 255, 255, 0.4);
     transform: translateY(-1px);
 }
 
-.restart-btn:active {
+.install-btn {
+    color: var(--accent);
+    background: var(--bg-card);
+    border: 1px solid var(--accent-dim);
+}
+
+.install-btn:hover {
+    background: var(--bg-card-hover);
+    border-color: var(--accent);
+    box-shadow: 0 0 16px rgba(0, 255, 255, 0.25);
+    transform: translateY(-1px);
+}
+
+.action-btn:active {
     transform: translateY(0);
     box-shadow: none;
 }
 
 /* --- Footer --- */
 .footer {
-    margin-top: 4px;
+    margin-top: 8px;
 }
 
 .footer p {
@@ -250,38 +314,24 @@ body {
     color: var(--accent);
 }
 
-/* --- Responsive --- */
-@media (max-width: 620px) {
-    .app-container {
-        padding: 12px;
-        gap: 12px;
+/* --- Responsive Layout (Mobile Stacking) --- */
+@media (max-width: 880px) {
+    body {
+        overflow-y: auto;
     }
 
-    .title-bar h1 {
-        font-size: 1.4rem;
+    .game-layout {
+        flex-direction: column;
+        align-items: center;
     }
 
-    .canvas-wrapper {
-        padding: 8px;
+    .side-panel {
+        width: 100%;
+        max-width: 580px;
     }
 
     #hexCanvas {
         width: 100%;
         height: auto;
-    }
-}
-
-@media (max-height: 700px) {
-    .app-container {
-        gap: 8px;
-        padding: 8px;
-    }
-
-    .title-bar h1 {
-        font-size: 1.2rem;
-    }
-
-    .canvas-wrapper {
-        padding: 6px;
     }
 }

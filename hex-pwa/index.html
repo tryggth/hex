@@ -20,36 +20,52 @@
     <div class="app-container">
         <!-- Title Bar -->
         <header class="title-bar">
-            <h1>⬡ Hex MCTS</h1>
+            <div class="title-heading">
+                <h1>⬡ Hex MCTS</h1>
+                <span class="version-badge">v2.0</span>
+            </div>
             <p id="headerSubtitle" class="subtitle">Human (Red) vs AI (Blue) · 7×7</p>
         </header>
 
-        <!-- Game Canvas -->
-        <div class="canvas-wrapper">
-            <canvas id="hexCanvas" width="580" height="520"></canvas>
-        </div>
+        <!-- Main Game Layout (Board + Side Panel) -->
+        <div class="game-layout">
+            <!-- Left: Board Canvas -->
+            <div class="canvas-wrapper">
+                <canvas id="hexCanvas" width="580" height="520"></canvas>
+            </div>
 
-        <!-- Status Display -->
-        <div id="statusText" class="status-text">Your turn — place a Red stone</div>
+            <!-- Right: Side Panel (Status, Sliders, Buttons) -->
+            <div class="side-panel">
+                <!-- Status Display -->
+                <div id="statusText" class="status-text">Your turn — place a Red stone</div>
 
-        <!-- Controls -->
-        <div class="controls">
-            <div class="slider-group">
-                <label for="boardSizeSlider">Board Size:</label>
-                <input type="range" id="boardSizeSlider" min="5" max="11" step="1" value="7">
-                <span id="boardSizeValue">7×7</span>
+                <!-- Sliders Section -->
+                <div class="controls">
+                    <div class="slider-group">
+                        <label for="boardSizeSlider">Board Size:</label>
+                        <input type="range" id="boardSizeSlider" min="5" max="11" step="1" value="7">
+                        <span id="boardSizeValue">7×7</span>
+                    </div>
+
+                    <div class="slider-group">
+                        <label for="timeSlider">Thinking Time:</label>
+                        <input type="range" id="timeSlider" min="500" max="5000" step="250" value="1500">
+                        <span id="timeValue">1500ms</span>
+                    </div>
+
+                    <div class="slider-group">
+                        <label for="cSlider">Exploration (c):</label>
+                        <input type="range" id="cSlider" min="0" max="5" step="0.1" value="1.4">
+                        <span id="cValue">1.40</span>
+                    </div>
+                </div>
+
+                <!-- Action Buttons -->
+                <div class="button-group">
+                    <button id="restartBtn" class="action-btn restart-btn">Restart Game</button>
+                    <button id="installBtn" class="action-btn install-btn" style="display: none;">📥 Install App</button>
+                </div>
             </div>
-            <div class="slider-group">
-                <label for="timeSlider">Thinking Time:</label>
-                <input type="range" id="timeSlider" min="500" max="5000" step="250" value="1500">
-                <span id="timeValue">1500ms</span>
-            </div>
-            <div class="slider-group">
-                <label for="cSlider">Exploration (c):</label>
-                <input type="range" id="cSlider" min="0" max="5" step="0.1" value="1.4">
-                <span id="cValue">1.4</span>
-            </div>
-            <button id="restartBtn" class="restart-btn">Restart</button>
         </div>
 
         <!-- Footer -->
@@ -68,7 +84,6 @@
                 .then(reg => console.log('SW registered:', reg.scope))
                 .catch(err => console.warn('SW registration failed:', err));
 
-            // Auto-reload when a new service worker takes control
             let refreshing = false;
             navigator.serviceWorker.addEventListener('controllerchange', () => {
                 if (!refreshing) {
