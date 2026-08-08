@@ -1,0 +1,81 @@
+================================================================================
+PHASE 2 VERIFICATION REPORT (HexEnv Simulator)
+================================================================================
+
+1. HexEnv.step() SOURCE CODE:
+--------------------------------------------------------------------------------
+    def step(self, action: int):
+        if self.board[action] != 0 or self.winner != 0:
+            raise ValueError(f"Invalid move index {action} on board state")
+
+        r = action // self.board_size
+        c = action % self.board_size
+        player = self.current_player
+
+        self.board[action] = player
+        self.moves_made += 1
+
+        # Connect to adjacent friendly stones
+        for dr, dc in HEX_DIRS:
+            nr, nc = r + dr, c + dc
+            if self.is_valid(nr, nc):
+                nidx = self.coord_to_idx(nr, nc)
+                if self.board[nidx] == player:
+                    self.uf.union(action, nidx)
+
+        # Connect border cells to sentinels
+        if player == 1:  # Red (Top-to-Bottom)
+            if r == 0:
+                self.uf.union(action, self.red_top)
+            if r == self.board_size - 1:
+                self.uf.union(action, self.red_bottom)
+        else:  # Blue (Left-to-Right)
+            if c == 0:
+                self.uf.union(action, self.blue_left)
+            if c == self.board_size - 1:
+                self.uf.union(action, self.blue_right)
+
+        # Check win conditions
+        reward = 0.0
+        done = False
+
+        if player == 1 and self.uf.find(self.red_top) == self.uf.find(self.red_bottom):
+            self.winner = 1
+            reward = 1.0
+            done = True
+        elif player == 2 and self.uf.find(self.blue_left) == self.uf.find(self.blue_right):
+            self.winner = 2
+            reward = 1.0
+            done = True
+        elif self.moves_made == self.num_cells:
+            done = True
+
+        # Swap player turn
+        self.current_player = 2 if self.current_player == 1 else 1
+
+        return self.get_observation(), reward, done
+
+
+2. HexEnv.get_observation() SOURCE CODE:
+--------------------------------------------------------------------------------
+    def get_observation(self) -> np.ndarray:
+        obs = np.zeros((3, self.board_size, self.board_size), dtype=np.float32)
+        grid = self.board.reshape((self.board_size, self.board_size))
+
+        # Channel 0: Player 1 (Red) stones
+        obs[0] = (grid == 1).astype(np.float32)
+        # Channel 1: Player 2 (Blue) stones
+        obs[1] = (grid == 2).astype(np.float32)
+        # Channel 2: Current player turn (1.0 for P1, 0.0 for P2)
+        obs[2] = 1.0 if self.current_player == 1 else 0.0
+
+        return obs
+
+
+3. SIMULATED GAME VERIFICATION RESULTS:
+--------------------------------------------------------------------------------
+Player 1 (Vertical - Red) Win Test: PASS
+Player 2 (Horizontal - Blue) Win Test: PASS
+Observation Tensor Shape: (3, 5, 5) verified.
+Overall Status: ALL TESTS PASSED SUCCESSFULLY!
+================================================================================
