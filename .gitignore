@@ -6,3 +6,8 @@
 
 # Local aggregated text files (not tracked in git)
 hex_app_all_code.txt
+
+# Python Virtual Environment & Bytecode
+venv/
+__pycache__/
+*.pyc
