@@ -566,6 +566,10 @@ function render(state, rootNode = null) {
             
             let stroke = COLOR_EMPTY_STROKE;
             let lw = 1;
+            
+            let isThinkingWithVisit = (player === EMPTY && maxVisits > 0 && visitMap[idx] !== undefined);
+            let t = 0;
+            let visits = 0;
 
             if (player === EMPTY) {
                 let isTopOrBottom = r === 0 || r === size - 1;
@@ -583,37 +587,52 @@ function render(state, rootNode = null) {
                         lw = 2;
                     }
                 }
+
+                // Heatmap interior scaling: scale fill from white to cyan/blue
+                if (isThinkingWithVisit) {
+                    visits = visitMap[idx];
+                    t = Math.pow(visits / maxVisits, 0.5);
+                    // Scale interior fill from white (#FFFFFF) to final cyan/blue placement color (#0088FF)
+                    fill = lerpColor('#FFFFFF', '#0088FF', t);
+                    
+                    if (!isTopOrBottom && !isLeftOrRight) {
+                        stroke = lerpColor('#2a3a52', '#00FFFF', t);
+                        lw = 1 + t * 1.5;
+                    }
+                }
             }
 
             drawHex(x, y, fill, stroke, lw);
 
-            // 1) Render Hex Cell Number
-            let isThinkingWithVisit = (player === EMPTY && maxVisits > 0 && visitMap[idx]);
-            
+            // Render Cell Text & Heatmap Visit Counts
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
             
             if (player === EMPTY) {
-                ctx.fillStyle = isThinkingWithVisit ? 'rgba(255, 255, 255, 0.45)' : 'rgba(255, 255, 255, 0.55)';
-                ctx.font = `${numFontSize}px sans-serif`;
-                let numY = isThinkingWithVisit ? y - hexSize * 0.42 : y;
-                ctx.fillText(cellNum.toString(), x, numY);
+                if (isThinkingWithVisit) {
+                    // High-contrast text color based on interior brightness
+                    let mainTextColor = t > 0.65 ? '#FFFFFF' : '#0a0e1a';
+                    let visitTextColor = t > 0.65 ? '#00FFFF' : '#003366';
+
+                    ctx.fillStyle = mainTextColor;
+                    ctx.font = `bold ${numFontSize}px sans-serif`;
+                    let numY = y - hexSize * 0.42;
+                    ctx.fillText(cellNum.toString(), x, numY);
+
+                    // Heatmap visit count (centered below cell number)
+                    ctx.fillStyle = visitTextColor;
+                    ctx.font = `bold ${mctsFontSize}px sans-serif`;
+                    ctx.fillText(visits.toString(), x, y + hexSize * 0.18);
+                } else {
+                    ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+                    ctx.font = `${numFontSize}px sans-serif`;
+                    ctx.fillText(cellNum.toString(), x, y);
+                }
             } else {
                 // Stone is placed — draw subtle cell number
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.85)';
                 ctx.font = `bold ${numFontSize}px sans-serif`;
                 ctx.fillText(cellNum.toString(), x, y);
-            }
-
-            // 2) Heatmap rendering during AI thinking (centered below cell number)
-            if (isThinkingWithVisit) {
-                let v = visitMap[idx];
-                let t = Math.pow(v / maxVisits, 0.5); 
-                let color = lerpColor('#3a7ab0', '#00FFFF', t);
-                
-                ctx.fillStyle = color;
-                ctx.font = `bold ${mctsFontSize}px sans-serif`;
-                ctx.fillText(v.toString(), x, y + hexSize * 0.18);
             }
         }
     }
