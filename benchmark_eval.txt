@@ -1,0 +1,50 @@
+================================================================================
+PHASE 5.5 HARDWARE BENCHMARK REPORT
+================================================================================
+
+1. RAW PYTORCH MODEL INFERENCE SPEED (Avg Time / Call over 1,000 iterations):
+--------------------------------------------------------------------------------
+5x5 Board:
+  - RepresentationNetwork (Initial Inference): 1.0244 ms / call
+  - DynamicsNetwork (Recurrent Inference):     0.8583 ms / call
+
+7x7 Board:
+  - RepresentationNetwork (Initial Inference): 0.5896 ms / call
+  - DynamicsNetwork (Recurrent Inference):     1.9718 ms / call
+
+
+2. LATENT MCTS THROUGHPUT (100-Simulation Search Execution Time):
+--------------------------------------------------------------------------------
+  - 5x5 Board (25 Legal Actions):  339.14 ms / 100 sims
+  - 7x7 Board (49 Legal Actions):  147.06 ms / 100 sims
+
+
+3. SELF-PLAY GAME COMPLETION RATE (40 MCTS Sims / Move):
+--------------------------------------------------------------------------------
+  - 5x5 Board Avg Time / Game: 2.05 seconds
+  - 7x7 Board Avg Time / Game: 5.54 seconds
+
+
+4. TRAINING TIME PROJECTIONS:
+--------------------------------------------------------------------------------
+  - 5x5 Board (50 Games):   ~1.71 minutes
+  - 5x5 Board (100 Games):  ~3.41 minutes
+  - 7x7 Board (40 Games):   ~3.69 minutes
+  - 7x7 Board (50 Games):   ~4.61 minutes
+
+
+5. DECISION CRITERIA:
+--------------------------------------------------------------------------------
+7x7 Avg Game Time Threshold: 15.00 seconds.
+Measured 7x7 Game Time:      5.54 seconds.
+Selected Pipeline: 7x7 Scaled Training (40 Games)
+================================================================================
+
+6. SCALED 7x7 TRAINING LOGS (40 Games, 5 Epochs):
+--------------------------------------------------------------------------------
+  Epoch 1/5 - Total Loss: 5.0113 | Policy Loss: 3.9861 | Value Loss: 1.0252
+  Epoch 2/5 - Total Loss: 4.8541 | Policy Loss: 3.9520 | Value Loss: 0.9021
+  Epoch 3/5 - Total Loss: 4.7512 | Policy Loss: 3.9289 | Value Loss: 0.8224
+  Epoch 4/5 - Total Loss: 4.6656 | Policy Loss: 3.9117 | Value Loss: 0.7539
+  Epoch 5/5 - Total Loss: 4.5898 | Policy Loss: 3.8980 | Value Loss: 0.6917
+================================================================================

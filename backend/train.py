@@ -11,13 +11,13 @@ from muzero_nets import MuZeroModels
 from latent_mcts import LatentMCTS
 
 def train_self_play(
-    num_games: int = 20,
+    num_games: int = 40,
     mcts_simulations_per_move: int = 40,
-    epochs_per_game_batch: int = 3,
+    epochs_per_game_batch: int = 5,
     learning_rate: float = 1e-3,
-    board_size: int = 5
+    board_size: int = 7
 ):
-    print(f"=== Starting MuZero Self-Play Training ===")
+    print(f"=== Starting Scaled MuZero Self-Play Training ===")
     print(f"  Board Size: {board_size}x{board_size}")
     print(f"  Games: {num_games}")
     print(f"  MCTS Sims/Move: {mcts_simulations_per_move}")
@@ -29,7 +29,7 @@ def train_self_play(
     model = MuZeroModels(board_size=board_size, action_space_size=action_space_size, latent_channels=32, num_res_blocks=2)
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
-    trajectory_data = []  # List of dicts
+    trajectory_data = []
 
     # 1. Self-Play Trajectory Collection
     for game_idx in range(num_games):
@@ -92,14 +92,14 @@ def train_self_play(
             ))
 
     # 2. Neural Network Optimization Pass
-    print(f"\n--- Training PyTorch MuZero Model on {len(trajectory_data)} self-play states ---")
+    print(f"\n--- Training 7x7 PyTorch MuZero Model on {len(trajectory_data)} self-play states ---")
     model.train()
 
     batch_obs = torch.tensor(np.array([d[0] for d in trajectory_data]), dtype=torch.float32)
     batch_target_policy = torch.tensor(np.array([d[2] for d in trajectory_data]), dtype=torch.float32)
     batch_target_value = torch.tensor(np.array([d[3] for d in trajectory_data]), dtype=torch.float32).unsqueeze(1)
 
-    loss_history = []
+    loss_logs = []
 
     for epoch in range(1, epochs_per_game_batch + 1):
         value, reward, policy_logits, latent_state = model.initial_inference(batch_obs)
@@ -115,20 +115,22 @@ def train_self_play(
         total_loss.backward()
         optimizer.step()
 
-        loss_history.append({
-            "epoch": epoch,
-            "total_loss": total_loss.item(),
-            "policy_loss": policy_loss.item(),
-            "value_loss": value_loss.item()
-        })
-        print(f"  Epoch {epoch}/{epochs_per_game_batch} - Total Loss: {total_loss.item():.4f} | Policy Loss: {policy_loss.item():.4f} | Value Loss: {value_loss.item():.4f}")
+        log_str = f"  Epoch {epoch}/{epochs_per_game_batch} - Total Loss: {total_loss.item():.4f} | Policy Loss: {policy_loss.item():.4f} | Value Loss: {value_loss.item():.4f}"
+        print(log_str)
+        loss_logs.append(log_str)
 
     # Save trained model weights
     save_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "model_weights.pth"))
     torch.save(model.state_dict(), save_path)
-    print(f"\n✅ Saved trained model weights to: {save_path}")
+    print(f"\n✅ Saved trained 7x7 model weights to: {save_path}")
 
-    return loss_history
+    # Append final training logs to benchmark_eval.txt
+    eval_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "benchmark_eval.txt"))
+    append_str = "\n6. SCALED 7x7 TRAINING LOGS (40 Games, 5 Epochs):\n--------------------------------------------------------------------------------\n" + "\n".join(loss_logs) + "\n================================================================================\n"
+    with open(eval_path, "a", encoding="utf-8") as f:
+        f.write(append_str)
+
+    print(f"✅ Appended training logs to: {eval_path}")
 
 if __name__ == "__main__":
-    train_self_play()
+    train_self_play(num_games=40, mcts_simulations_per_move=40, epochs_per_game_batch=5, learning_rate=1e-3, board_size=7)
