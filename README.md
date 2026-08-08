@@ -1,12 +1,14 @@
 # ⬡ Hex MCTS — AI Board Game & PWA Demo
 
 [![PLAY NOW — Live PWA Demo](https://img.shields.io/badge/PLAY_NOW-Live_PWA_Demo-00FFFF?style=for-the-badge&logo=google-chrome&logoColor=0a0e1a)](https://tryggth.github.io/hex/)
+[![DOCUMENTATION — PDF Paper](https://img.shields.io/badge/DOCUMENTATION-PDF_Paper-FF4444?style=for-the-badge&logo=adobe-acrobat-reader&logoColor=white)](paper/mcts_hex_paper.pdf)
 [![Deploy to GitHub Pages](https://github.com/tryggth/hex/actions/workflows/deploy-pages.yml/badge.svg)](https://github.com/tryggth/hex/actions/workflows/deploy-pages.yml)
 [![PWA Self-Updating](https://img.shields.io/badge/PWA-Self--Updating-00FFFF?style=flat-square)](https://tryggth.github.io/hex/)
 
 An installable, self-updating **Progressive Web App (PWA)** demonstrating real-time **Monte Carlo Tree Search (MCTS)** for the classic two-player strategy game **Hex**.
 
-🎮 **Live Web Application**: [https://tryggth.github.io/hex/](https://tryggth.github.io/hex/)
+🎮 **Live Web Application**: [https://tryggth.github.io/hex/](https://tryggth.github.io/hex/)  
+📄 **Mathematical Paper (PDF)**: [**`paper/mcts_hex_paper.pdf`**](paper/mcts_hex_paper.pdf) — *"Monte Carlo Tree Search and Hex: A Topological and Probabilistic Exploration"*
 
 ---
 
@@ -18,6 +20,9 @@ This app demonstrates how a pure **Monte Carlo Tree Search (MCTS)** algorithm di
 
 ### Key Features
 
+* **📄 Academic & Mathematical Documentation**:
+  - Full research paper included in [`paper/mcts_hex_paper.tex`](paper/mcts_hex_paper.tex) and compiled as [`paper/mcts_hex_paper.pdf`](paper/mcts_hex_paper.pdf).
+  - Covers topological equivalence to the Brouwer Fixed-Point Theorem, Nash's Strategy-Stealing argument, UCB1/UCT bandit formulation, log-factorial path computation, and non-linear heatmap scaling.
 * **🎨 Dynamic Heatmap Visualization**:
   - The interior background fill of candidate hexes dynamically scales from **soft white (`#FFFFFF`)** for initial exploration up to **electric cyan/blue (`#0088FF`)** for top candidate moves ($v / v_{\max}$).
   - Number text colors remain constant dark navy (`#050a14`) for maximum legibility.
@@ -43,6 +48,9 @@ This app demonstrates how a pure **Monte Carlo Tree Search (MCTS)** algorithm di
 
 ```
 hex/
+├── paper/                            # LaTeX Documentation & Paper
+│   ├── mcts_hex_paper.tex            # LaTeX paper source
+│   └── mcts_hex_paper.pdf            # Compiled PDF paper
 ├── hex-pwa/                          # Single Page Web Application
 │   ├── index.html                    # SPA HTML entry point & UI layout
 │   ├── style.css                     # Dark navy/cyan CSS design system
@@ -52,7 +60,8 @@ hex/
 │   ├── generate_icon.py              # Icon generator script
 │   └── icons/                        # PWA app icons (192×192 and 512×512 PNGs)
 ├── .github/workflows/
-│   └── deploy-pages.yml              # CI/CD GitHub Actions Pages deployment & auto-versioning
+│   ├── deploy-pages.yml              # CI/CD GitHub Actions Pages deployment & auto-versioning
+│   └── compile-paper.yml             # CI/CD GitHub Actions LaTeX PDF compilation workflow
 ├── generate_hex_bg.py                # Presentation slide background generator (1920×1080)
 ├── generate_explosion_v2.py          # Minimax vs MCTS decision tree graphic generator (3840×2160)
 └── README.md

@@ -1,0 +1,107 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{hyperref}
+\usepackage{graphicx}
+\usepackage{setspace}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\setstretch{1.15}
+
+\hypersetup{
+    colorlinks=true,
+    linkcolor=blue,
+    urlcolor=blue,
+}
+
+\title{\textbf{Monte Carlo Tree Search and Hex:\\ A Topological and Probabilistic Exploration}}
+\author{Demonstration Project Documentation}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This paper explores the mathematical foundations and practical implementation of Monte Carlo Tree Search (MCTS). We contextualize the algorithm through the game of Hex, a connection game with profound topological implications. By examining the historical development of both the game and the algorithm, we detail why deterministic search methods fail in high-complexity spaces and how MCTS overcomes these bounds via probabilistic sampling. We further discuss zero-knowledge variants, broader applications in computational mathematics, and the architecture of an interactive MCTS Hex demonstration deployed as a client-side Progressive Web Application (PWA).
+\end{abstract}
+
+\section{Introduction}
+The challenge of navigating immense combinatorial spaces has historically driven advancements in applied mathematics and computer science. Traditional decision-making algorithms, such as Minimax augmented with $\alpha$-$\beta$ pruning, require the exploration of finite game trees. While highly successful in environments with manageable branching factors and reliable heuristic evaluation functions, these deterministic methods falter in domains characterized by massive state spaces or abstract positional values. 
+
+Monte Carlo Tree Search (MCTS) offers an elegant alternative by merging the precision of tree search with the statistical power of random sampling. Rather than exhaustively evaluating all possible futures, MCTS builds an asymmetric decision tree, focusing computational resources strictly on the most promising variations based on empirical results. To illustrate this algorithm in practice, we examine its application to the game of Hex.
+
+\section{The Game of Hex: Topology and Combinatorics}
+Invented independently by Danish mathematician Piet Hein in 1942 and by John Nash at Princeton University in 1948, Hex is a zero-sum connection game played on a rhombus grid of hexagonal cells. Two players attempt to form an unbroken chain of connected stones between opposing sides of the board. In the context of our demonstration application, the Human player (Red) attempts a Top-to-Bottom connection, while the algorithmic agent (Blue) attempts a Left-to-Right connection.
+
+\subsection{Topology and the Brouwer Fixed-Point Theorem}
+Unlike many combinatorial games, a completed game of Hex can never end in a draw. This property is deeply rooted in topology. In 1979, mathematician David Gale demonstrated that the ``Hex Theorem'' (the impossibility of a draw) is mathematically equivalent to the two-dimensional Brouwer Fixed-Point Theorem. Thus, playing Hex is fundamentally an exercise in constructing and blocking continuous mappings across a topological space.
+
+\subsection{The Strategy-Stealing Argument}
+Nash famously proved that the first player has a guaranteed winning strategy on any symmetric $n \times n$ board. His non-constructive proof utilizes a \textit{strategy-stealing argument}: assume, for the sake of contradiction, that the second player has a winning strategy. The first player could place an arbitrary initial tile and then mentally adopt the second player's winning strategy. Because an extra tile on the board can never disadvantage a player in Hex (the game is strictly monotonic), the first player can force a win, contradicting the initial assumption.
+
+While this proves a winning strategy exists, it provides no computational method for finding it. Determining the winner of a generalized Hex position is PSPACE-complete. The state space complexity of an $11 \times 11$ board is approximately $\mathcal{O}(10^{43})$, rendering explicit calculation impossible and making Hex an ideal candidate for probabilistic search.
+
+\section{Monte Carlo Tree Search}
+\subsection{Historical Context}
+The foundation of MCTS rests on the Monte Carlo method, formalized in the 1940s by Stanislaw Ulam and John von Neumann. In 1990, Bruce Abramson explored using random rollouts to evaluate game tree leaves. 
+
+The modern instantiation of MCTS emerged in 2006. R\'emi Coulom coined the term ``Monte Carlo Tree Search,'' and independently, Levente Kocsis and Csaba Szepesv\'ari published the breakthrough UCT (Upper Confidence bounds applied to Trees) algorithm. UCT maps the multi-armed bandit problem onto tree traversal, allowing for asymmetric, statistically guided exploration. MCTS achieved global prominence in 2016 as the core of DeepMind's AlphaGo.
+
+\subsection{The Four-Phase Algorithm}
+MCTS navigates a state space modeled as a directed acyclic graph. It builds a search tree incrementally by iterating through four distinct phases until a computational budget is exhausted:
+
+\begin{enumerate}
+    \item \textbf{Selection:} Starting from the root node, a tree policy navigates down to a leaf node. The selection balances \textit{exploitation} (choosing nodes with a high empirical win rate) and \textit{exploration} (choosing rarely visited nodes). This is governed by the UCB1 formula (derived from Hoeffding's inequality):
+    \begin{equation}
+        \text{UCT}_i = \frac{w_i}{n_i} + c \sqrt{\frac{\ln N_i}{n_i}}
+    \end{equation}
+    where $w_i$ is the number of wins for child node $i$, $n_i$ is its visit count, $N_i$ is the parent node's visit count, and $c$ is the exploration constant.
+    \item \textbf{Expansion:} If the selected leaf node is not a terminal state, the tree is expanded by generating valid child nodes representing legal moves.
+    \item \textbf{Simulation (Rollout):} From a newly expanded node, a simulation is run to a terminal state. In classical MCTS, this involves uniform random play. Because Hex guarantees a winner without infinite loops, these stochastic rollouts are computationally efficient and highly effective.
+    \item \textbf{Backpropagation:} The terminal outcome is propagated backward up the traversed path, updating $n_i$ and $w_i$ for each node.
+\end{enumerate}
+
+\subsection{Zero-Knowledge Variants: Learning the Rules}
+Classical MCTS requires a perfect environment simulator (the game rules) to perform random rollouts. However, modern variants have abstracted this requirement. Algorithms like MuZero (2019) do not require \textit{a priori} knowledge of the environment's transition dynamics. By applying MCTS entirely within a lower-dimensional latent space modeled by a neural network, the algorithm navigates complex domains without explicitly defined mathematical rules, relying purely on internally learned transition models.
+
+\section{Broader Applications of MCTS}
+Because MCTS is a generic decision-making framework capable of navigating arbitrary combinatorial spaces, its applications extend far beyond zero-sum games:
+\begin{itemize}
+    \item \textbf{Combinatorial Optimization:} DeepMind's AlphaTensor framed matrix multiplication as a single-player game, using MCTS to discover novel tensor decomposition algorithms.
+    \item \textbf{Automated Theorem Proving:} Systems like AlphaGeometry represent geometric axioms as starting states and logical deductions as actions, using MCTS to search the space of valid proofs.
+    \item \textbf{Generative AI:} Advanced Large Language Models (LLMs) employ inference-time compute algorithms inspired by MCTS to navigate ``trees of thought,'' systematically verifying intermediate logical steps before outputting solutions.
+\end{itemize}
+
+\section{Implementation in the Interactive Demonstration}
+The accompanying demonstration project\footnote{Live application available at \url{https://tryggth.github.io/hex/}, with source code hosted at \url{https://github.com/tryggth/hex}.} is deployed statically via GitHub Pages as a client-side Progressive Web App (PWA). It features a continuous CI/CD pipeline that independently self-updates service worker caching. The application exposes the internal mathematics of the pure MCTS engine directly to the user, generating strategies from scratch in real time without pre-computed lookup tables or neural networks.
+
+\subsection{Numerical Bounding of the Combinatorial Explosion}
+A central feature of the application is a ``Cosmic Inspection Panel'' that dynamically calculates $E!$, the number of possible future playout sequences (where $E$ is the number of empty cells). 
+
+On an $11 \times 11$ board, calculating $E!$ trivially exceeds the maximum representable value of IEEE 754 double-precision floating-point format ($1.79 \times 10^{308}$). To prevent numeric overflow (which yields \texttt{Infinity} in standard web environments), the application computes the permutations using a summation of base-10 logarithms:
+\begin{equation}
+    \log_{10}(E!) = \sum_{i=1}^{E} \log_{10}(i)
+\end{equation}
+The application extracts the exponent as $X = \lfloor \sum \log_{10}(i) \rfloor$ and the mantissa as $M = 10^{\sum \log_{10}(i) - X}$. This allows the UI to safely format the vast state space (e.g., $1.24 \times 10^{61}$) and map it against cosmic scale thresholds (such as the number of atoms in the observable universe, or the Shannon Number for chess).
+
+\subsection{Non-Linear Scaling of the Attention Heatmap}
+During real-time strategy generation, the application visualizes the algorithm's search density by modulating the internal fill color of the hexagonal cells on the HTML5 canvas. Because MCTS visit counts ($v$) form a heavily skewed distribution, a linear color mapping would obscure secondary candidate moves. 
+
+To resolve this, the interface applies a fractional power curve mapped to the normalized visit count:
+\begin{equation}
+    t = \left(\frac{v}{v_{\text{max}}}\right)^{0.5}
+\end{equation}
+Applying the square root artificially inflates the visual weight of mid-tier candidates, allowing the observer to clearly track the algorithm's shifting attention as it prunes unviable subtrees in real time.
+
+\subsection{The Anytime Algorithm Property and Parameterization}
+Because MCTS operates iteratively rather than deterministically, it possesses the ``anytime'' algorithm property—meaning it can be halted at any arbitrary millisecond and still return a mathematically rigorous best guess based on the asymmetrical tree built thus far. The UI actively demonstrates this theorem via a ``Stop Strategizing'' interrupt feature. By manually halting the execution thread, the application ceases iterations, evaluates the current root tree, selects the candidate node with the highest visit count, and immediately yields control back to the human player.
+
+Furthermore, users can manipulate the exploration parameter $c$ from Equation (1). By dynamically adjusting this value via a UI slider, observers can perturb the algorithm. Setting $c \approx 0$ forces a greedy policy prone to local optima, while high values induce undirected noise, illustrating empirically why the default $c = 1.40 \approx \sqrt{2}$ maintains theoretically optimal convergence.
+
+\section{Conclusion}
+Monte Carlo Tree Search represents a paradigm shift in navigating combinatorial complexity. By substituting exhaustive calculation with probabilistically bounded sampling, MCTS effectively deduces mathematically robust strategies without relying on heuristic evaluation functions. The provided PWA Hex demonstration serves as a tangible manifestation of these principles, illustrating how advanced topological reasoning, numerical precision, and strategic depth can emerge organically from the law of large numbers.
+
+\end{document}

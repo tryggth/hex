@@ -1,0 +1,37 @@
+name: Compile LaTeX Paper
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'paper/*.tex'
+      - '.github/workflows/compile-paper.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-paper:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Compile LaTeX Paper
+        uses: xu-cheng/latex-action@v3
+        with:
+          root_file: mcts_hex_paper.tex
+          working_directory: paper
+
+      - name: Commit & Push Compiled PDF
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add paper/mcts_hex_paper.pdf
+          if git diff --staged --quiet; then
+            echo "No PDF changes to commit."
+          else
+            git commit -m "Auto-compile mcts_hex_paper.pdf from LaTeX source [skip ci]"
+            git push origin main
+          fi
