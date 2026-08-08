@@ -3,3 +3,6 @@
 
 # But track PWA icons (they're needed for deployment)
 !hex-pwa/icons/*.png
+
+# Local aggregated text files (not tracked in git)
+hex_app_all_code.txt
