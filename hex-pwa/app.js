@@ -493,6 +493,132 @@ class MCTS {
     }
 }
 
+// --- REMOTE MUZERO ADAPTER ---
+class RemoteMuZero {
+    constructor(ws = null) {
+        this.ws = ws;
+        this.root = null;
+        this.isRunning = false;
+        this.isPaused = false;
+        this.isAborted = false;
+        this.accumulatedTime = 0;
+        this.resolveSearch = null;
+
+        if (this.ws) {
+            this.bindSocketEvents();
+        }
+    }
+
+    bindSocketEvents() {
+        if (!this.ws) return;
+
+        this.ws.onmessage = (event) => {
+            try {
+                let data = JSON.parse(event.data);
+                if (data.type === 'heatmap_update') {
+                    // CRUCIAL: If paused, ignore incoming updates so UI stays frozen for inspection
+                    if (this.isPaused) return;
+
+                    this.root = {
+                        visits: data.total_nodes || 0,
+                        children: data.visits || []
+                    };
+
+                    if (typeof render === 'function' && typeof gameState !== 'undefined') {
+                        render(gameState, this.root);
+                    }
+                    if (typeof updateCosmicPanel === 'function') {
+                        updateCosmicPanel();
+                    }
+                } else if (data.type === 'final_move') {
+                    this.finishSearch(data.move);
+                }
+            } catch (err) {
+                console.warn('[RemoteMuZero] Error parsing WebSocket message:', err);
+            }
+        };
+    }
+
+    finishSearch(moveIdx) {
+        this.isRunning = false;
+        this.isPaused = false;
+        this.isAborted = false;
+
+        if (typeof updateButtonStates === 'function') {
+            updateButtonStates();
+        }
+
+        // If moveIdx is invalid, fallback to child move with max visits
+        if ((moveIdx === undefined || moveIdx === null || moveIdx === -1) && this.root && this.root.children && this.root.children.length > 0) {
+            let maxV = -1;
+            for (let child of this.root.children) {
+                if (child.visits > maxV) {
+                    maxV = child.visits;
+                    moveIdx = child.move;
+                }
+            }
+        }
+
+        if (this.resolveSearch) {
+            let resolve = this.resolveSearch;
+            this.resolveSearch = null;
+            resolve(moveIdx !== undefined ? moveIdx : -1);
+        }
+    }
+
+    async search(state, timeLimitMs) {
+        this.root = { visits: 0, children: [] };
+        this.isRunning = true;
+        this.isPaused = false;
+        this.isAborted = false;
+        this.accumulatedTime = 0;
+
+        if (typeof updateButtonStates === 'function') {
+            updateButtonStates();
+        }
+
+        return new Promise((resolve) => {
+            this.resolveSearch = resolve;
+
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                let payload = {
+                    action: "think",
+                    board: Array.from(state.board),
+                    size: state.size,
+                    timeLimit: timeLimitMs
+                };
+                this.ws.send(JSON.stringify(payload));
+            } else {
+                this.finishSearch(-1);
+                return;
+            }
+
+            // Monitor anytime algorithm interrupt (isAborted)
+            let checkInterval = setInterval(() => {
+                if (this.isAborted) {
+                    clearInterval(checkInterval);
+                    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                        this.ws.send(JSON.stringify({ action: "stop" }));
+                    }
+                    let bestMove = -1;
+                    if (this.root && this.root.children && this.root.children.length > 0) {
+                        let maxV = -1;
+                        for (let child of this.root.children) {
+                            if (child.visits > maxV) {
+                                maxV = child.visits;
+                                bestMove = child.move;
+                            }
+                        }
+                    }
+                    this.finishSearch(bestMove);
+                } else if (!this.isRunning) {
+                    clearInterval(checkInterval);
+                }
+            }, 40);
+        });
+    }
+}
+
 // --- RENDERING ---
 function getHexCenter(r, c) {
     let x = offsetX + hexW * c + (r * hexW) / 2;
@@ -639,6 +765,36 @@ function render(state, rootNode = null) {
 let initialSize = boardSizeSlider ? parseInt(boardSizeSlider.value) : 7;
 let gameState = new HexBoard(initialSize);
 let mcts = new MCTS();
+
+// Attempt Graceful WebSocket connection to Remote PyTorch MuZero Backend
+(function initEngineAdapter() {
+    try {
+        let host = window.location.host || 'localhost:8000';
+        let wsUrl = `ws://${host}/ws/muzero`;
+        if (window.location.protocol === 'file:') {
+            wsUrl = 'ws://localhost:8000/ws/muzero';
+        }
+        let ws = new WebSocket(wsUrl);
+        ws.onopen = () => {
+            console.log('⚡ Connected to Remote PyTorch MuZero Engine via WebSocket!');
+            mcts = new RemoteMuZero(ws);
+            updateButtonStates();
+        };
+        ws.onerror = (err) => {
+            console.log('ℹ️ Remote WebSocket unavailable, fallback to local MCTS engine.');
+            mcts = new MCTS();
+        };
+        ws.onclose = () => {
+            if (mcts instanceof RemoteMuZero) {
+                console.log('⚠️ Remote engine connection closed. Falling back to local MCTS engine.');
+                mcts = new MCTS();
+            }
+        };
+    } catch (e) {
+        console.log('ℹ️ Remote engine connection failed, running local offline MCTS engine.', e);
+        mcts = new MCTS();
+    }
+})();
 
 function resetGame(size = currentBoardSize) {
     mcts.isPaused = false;
