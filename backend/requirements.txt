@@ -3,3 +3,4 @@ uvicorn
 websockets
 numpy
 torch
+tqdm

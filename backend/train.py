@@ -5,34 +5,51 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tqdm import tqdm
 
 from hex_env import HexEnv
 from muzero_nets import MuZeroModels
 from latent_mcts import LatentMCTS
 
 def train_self_play(
-    num_games: int = 40,
-    mcts_simulations_per_move: int = 40,
+    num_games: int = 100,
+    mcts_simulations_per_move: int = 200,
     epochs_per_game_batch: int = 5,
     learning_rate: float = 1e-3,
     board_size: int = 7
 ):
-    print(f"=== Starting Scaled MuZero Self-Play Training ===")
+    print(f"=== Starting Long-Haul MuZero Self-Play Training ===")
     print(f"  Board Size: {board_size}x{board_size}")
     print(f"  Games: {num_games}")
     print(f"  MCTS Sims/Move: {mcts_simulations_per_move}")
     print(f"  Epochs: {epochs_per_game_batch}")
-    print(f"  Learning Rate: {learning_rate}\n")
+    print(f"  Learning Rate: {learning_rate}")
+    print(f"  Model Architecture: latent_channels=64, num_res_blocks=5\n")
 
     action_space_size = board_size * board_size
     env = HexEnv(board_size=board_size)
-    model = MuZeroModels(board_size=board_size, action_space_size=action_space_size, latent_channels=32, num_res_blocks=2)
+    
+    # Deeper architecture for competitive long-haul performance
+    model = MuZeroModels(
+        board_size=board_size,
+        action_space_size=action_space_size,
+        latent_channels=64,
+        num_res_blocks=5
+    )
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+
+    # Ensure checkpoints directory exists
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    checkpoint_dir = os.path.join(base_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
     trajectory_data = []
 
-    # 1. Self-Play Trajectory Collection
-    for game_idx in range(num_games):
+    # 1. Self-Play Trajectory Collection with tqdm progress bar
+    print("--- Phase 1: Self-Play Trajectory Generation ---")
+    pbar = tqdm(range(num_games), desc="MuZero Self-Play Games", unit="game")
+
+    for game_idx in pbar:
         obs = env.reset()
         game_history = []
         done = False
@@ -79,7 +96,6 @@ def train_self_play(
             step_count += 1
 
         winner = env.winner
-        print(f"  Game {game_idx + 1:2d}/{num_games} finished in {step_count:2d} steps. Winner: Player {winner}")
 
         # Assign target values (+1 for winner, -1 for loser)
         for sample in game_history:
@@ -91,8 +107,16 @@ def train_self_play(
                 target_val
             ))
 
+        pbar.set_postfix({"Steps": step_count, "Winner": f"P{winner}", "States": len(trajectory_data)})
+
+        # Save checkpoint every 10 games
+        if (game_idx + 1) % 10 == 0:
+            chk_path = os.path.join(checkpoint_dir, f"model_checkpoint_{game_idx + 1}.pth")
+            torch.save(model.state_dict(), chk_path)
+            tqdm.write(f"  💾 Saved checkpoint: {chk_path}")
+
     # 2. Neural Network Optimization Pass
-    print(f"\n--- Training 7x7 PyTorch MuZero Model on {len(trajectory_data)} self-play states ---")
+    print(f"\n--- Phase 2: Neural Network Optimization ({len(trajectory_data)} self-play states) ---")
     model.train()
 
     batch_obs = torch.tensor(np.array([d[0] for d in trajectory_data]), dtype=torch.float32)
@@ -119,18 +143,18 @@ def train_self_play(
         print(log_str)
         loss_logs.append(log_str)
 
-    # Save trained model weights
-    save_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "model_weights.pth"))
+    # Save final model weights
+    save_path = os.path.join(base_dir, "model_weights.pth")
     torch.save(model.state_dict(), save_path)
-    print(f"\n✅ Saved trained 7x7 model weights to: {save_path}")
+    print(f"\n🏆 Long-haul training complete! Saved master weights to: {save_path}")
 
-    # Append final training logs to benchmark_eval.txt
-    eval_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "benchmark_eval.txt"))
-    append_str = "\n6. SCALED 7x7 TRAINING LOGS (40 Games, 5 Epochs):\n--------------------------------------------------------------------------------\n" + "\n".join(loss_logs) + "\n================================================================================\n"
-    with open(eval_path, "a", encoding="utf-8") as f:
-        f.write(append_str)
-
-    print(f"✅ Appended training logs to: {eval_path}")
+    return loss_logs
 
 if __name__ == "__main__":
-    train_self_play(num_games=40, mcts_simulations_per_move=40, epochs_per_game_batch=5, learning_rate=1e-3, board_size=7)
+    train_self_play(
+        num_games=100,
+        mcts_simulations_per_move=200,
+        epochs_per_game_batch=5,
+        learning_rate=1e-3,
+        board_size=7
+    )

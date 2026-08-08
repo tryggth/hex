@@ -19,16 +19,21 @@ if not os.path.exists(STATIC_DIR):
 
 print(f"[MuZero Backend] Hosting static PWA from: {STATIC_DIR}")
 
-# Global PyTorch MuZero Neural Model
+# Global PyTorch MuZero Neural Model (Deep 64-channel, 5 ResBlock architecture)
 BOARD_SIZE = 7
 ACTION_SPACE_SIZE = 49
-model = MuZeroModels(board_size=BOARD_SIZE, action_space_size=ACTION_SPACE_SIZE, latent_channels=32, num_res_blocks=2)
+model = MuZeroModels(
+    board_size=BOARD_SIZE,
+    action_space_size=ACTION_SPACE_SIZE,
+    latent_channels=64,
+    num_res_blocks=5
+)
 
 WEIGHTS_PATH = os.path.join(BASE_DIR, "model_weights.pth")
 if os.path.exists(WEIGHTS_PATH):
     try:
         model.load_state_dict(torch.load(WEIGHTS_PATH, map_location="cpu"))
-        print(f"[MuZero Backend] Loaded PyTorch weights from: {WEIGHTS_PATH}")
+        print(f"[MuZero Backend] Loaded PyTorch master weights from: {WEIGHTS_PATH}")
     except Exception as e:
         print(f"[MuZero Backend] Warning: Could not load weights from {WEIGHTS_PATH}: {e}")
 else:
@@ -66,16 +71,16 @@ async def websocket_muzero(websocket: WebSocket):
         # Dynamic model scaling if board size differs from default 7x7
         active_model = model
         if size != BOARD_SIZE:
-            active_model = MuZeroModels(board_size=size, action_space_size=size*size, latent_channels=32, num_res_blocks=2)
+            active_model = MuZeroModels(board_size=size, action_space_size=size*size, latent_channels=64, num_res_blocks=5)
             active_model.eval()
 
         mcts_engine = LatentMCTS(model=active_model, c_puct=1.25)
 
-        # Run Latent MCTS search with real PyTorch neural network evaluations
+        # Run deep Latent MCTS search (400 simulations) with PyTorch neural network evaluations
         root = await mcts_engine.search(
             initial_state_tensor=obs_tensor,
             legal_actions=legal_actions,
-            num_simulations=50,
+            num_simulations=400,
             websocket=websocket,
             stop_event=stop_event
         )
@@ -88,7 +93,7 @@ async def websocket_muzero(websocket: WebSocket):
                 max_visits = child.visit_count
                 best_move = act
 
-        print(f"[MuZero Backend] Latent search completed ({root.visit_count} simulations). Selected move index: {best_move}")
+        print(f"[MuZero Backend] Deep Latent MCTS completed ({root.visit_count} simulations). Selected move index: {best_move}")
         try:
             await websocket.send_json({"type": "final_move", "move": best_move})
         except Exception as e:
@@ -108,7 +113,7 @@ async def websocket_muzero(websocket: WebSocket):
                 board = data.get("board", [])
                 size = data.get("size", 7)
                 time_limit = data.get("timeLimit", 1500)
-                print(f"[MuZero Backend] Initiating Latent MCTS on {size}x{size} board")
+                print(f"[MuZero Backend] Initiating Deep Latent MCTS on {size}x{size} board")
 
                 search_task = asyncio.create_task(
                     execute_latent_search(board, size, time_limit)
