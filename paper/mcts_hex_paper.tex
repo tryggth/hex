@@ -39,7 +39,7 @@ Invented independently by Danish mathematician Piet Hein in 1942 and by John Nas
 Unlike many combinatorial games, a completed game of Hex can never end in a draw. This property is deeply rooted in topology. Gale (1979) demonstrated that the ``Hex Theorem'' (the impossibility of a draw) is mathematically equivalent to the two-dimensional Brouwer Fixed-Point Theorem. Thus, playing Hex is fundamentally an exercise in constructing and blocking continuous mappings across a topological space.
 
 \subsection{The Strategy-Stealing Argument and Computational Complexity}
-Nash famously proved that the first player has a guaranteed winning strategy on any symmetric $n \times n$ board. His non-constructive proof utilizes a \textit{strategy-stealing argument}: assume, for the sake of contradiction, that the second player has a winning strategy. The first player could place an arbitrary initial tile and then mentally adopt the second player's winning strategy. Because an extra tile on the board can never disadvantage a player in Hex (the game is strictly monotonic), the first player can force a win, contradicting the initial assumption.
+Nash famously proved that the first player has a guaranteed winning strategy on any symmetric $n \times n$ board (Gale, 1979; Gardner, 1959). His non-constructive proof utilizes a \textit{strategy-stealing argument}: assume, for the sake of contradiction, that the second player has a winning strategy. The first player could place an arbitrary initial tile and then mentally adopt the second player's winning strategy. Because an extra tile on the board can never disadvantage a player in Hex (the game is strictly monotonic), the first player can force a win, contradicting the initial assumption.
 
 While this proves a winning strategy exists, it provides no computational method for finding it. Reisch (1981) established that determining the winner of an arbitrary Hex position is PSPACE-complete. The state space complexity of an $11 \times 11$ board is approximately $\mathcal{O}(10^{43})$, rendering explicit calculation impossible and making Hex an ideal candidate for probabilistic search.
 
@@ -114,6 +114,8 @@ Fawzi, A., Balog, M., Huang, A., Hubert, T., Romera-Paredes, B., Barekatain, M.,
 
 Gale, D. (1979). The Game of Hex and the Brouwer Fixed-Point Theorem. \textit{The American Mathematical Monthly}, \textit{86}(10), 818--827. \url{https://doi.org/10.1080/00029890.1979.11994922}
 Cited by: 399
+
+Gardner, M. (1959). \textit{The Scientific American Book of Mathematical Puzzles and Diversions}. Simon and Schuster.
 
 Kocsis, L., \& Szepesv\'ari, C. (2006). Bandit based Monte-Carlo planning. In \textit{European Conference on Machine Learning} (pp. 282--293). Springer, Berlin, Heidelberg. \url{https://doi.org/10.1007/11871842_29}
 
