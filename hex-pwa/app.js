@@ -610,17 +610,14 @@ function render(state, rootNode = null) {
             
             if (player === EMPTY) {
                 if (isThinkingWithVisit) {
-                    // High-contrast text color based on interior brightness
-                    let mainTextColor = t > 0.65 ? '#FFFFFF' : '#0a0e1a';
-                    let visitTextColor = t > 0.65 ? '#00FFFF' : '#003366';
-
-                    ctx.fillStyle = mainTextColor;
+                    // Constant, crisp dark navy text color for maximum legibility without confusing color shifts
+                    ctx.fillStyle = 'rgba(5, 10, 20, 0.65)';
                     ctx.font = `bold ${numFontSize}px sans-serif`;
                     let numY = y - hexSize * 0.42;
                     ctx.fillText(cellNum.toString(), x, numY);
 
-                    // Heatmap visit count (centered below cell number)
-                    ctx.fillStyle = visitTextColor;
+                    // Heatmap visit count (constant dark navy font color)
+                    ctx.fillStyle = '#050a14';
                     ctx.font = `bold ${mctsFontSize}px sans-serif`;
                     ctx.fillText(visits.toString(), x, y + hexSize * 0.18);
                 } else {
