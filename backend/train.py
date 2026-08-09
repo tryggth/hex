@@ -1,6 +1,9 @@
 import os
+import sys
 import random
+import argparse
 import asyncio
+from collections import deque
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,56 +14,82 @@ from hex_env import HexEnv
 from muzero_nets import MuZeroModels
 from latent_mcts import LatentMCTS
 
-def train_self_play(
-    num_games: int = 100,
-    mcts_simulations_per_move: int = 200,
-    epochs_per_game_batch: int = 5,
-    learning_rate: float = 1e-3,
-    board_size: int = 7
-):
-    print(f"=== Starting Long-Haul MuZero Self-Play Training ===")
-    print(f"  Board Size: {board_size}x{board_size}")
-    print(f"  Games: {num_games}")
-    print(f"  MCTS Sims/Move: {mcts_simulations_per_move}")
-    print(f"  Epochs: {epochs_per_game_batch}")
-    print(f"  Learning Rate: {learning_rate}")
-    print(f"  Model Architecture: latent_channels=64, num_res_blocks=5\n")
+class ExperienceReplayBuffer:
+    """Experience Replay Buffer for storing and sampling self-play transitions."""
+    def __init__(self, capacity: int = 10000):
+        self.buffer = deque(maxlen=capacity)
 
-    action_space_size = board_size * board_size
-    env = HexEnv(board_size=board_size)
+    def push(self, observation: np.ndarray, target_policy: np.ndarray, target_value: float):
+        self.buffer.append((observation, target_policy, target_value))
+
+    def sample(self, batch_size: int):
+        k = min(batch_size, len(self.buffer))
+        indices = np.random.choice(len(self.buffer), size=k, replace=False)
+        samples = [self.buffer[i] for i in indices]
+
+        batch_obs = torch.tensor(np.array([s[0] for s in samples]), dtype=torch.float32)
+        batch_policy = torch.tensor(np.array([s[1] for s in samples]), dtype=torch.float32)
+        batch_value = torch.tensor(np.array([s[2] for s in samples]), dtype=torch.float32).unsqueeze(1)
+
+        return batch_obs, batch_policy, batch_value
+
+    def __len__(self) -> int:
+        return len(self.buffer)
+
+def train_self_play(args):
+    print(f"=== Starting Configurable MuZero Self-Play Training ===")
+    print(f"  Board Size:           {args.board_size}x{args.board_size}")
+    print(f"  Self-Play Games:      {args.num_games}")
+    print(f"  MCTS Sims / Move:     {args.sims_per_move}")
+    print(f"  Residual Blocks:      {args.num_blocks}")
+    print(f"  Latent Channels:      {args.latent_channels}")
+    print(f"  Learning Rate:        {args.lr}")
+    print(f"  Batch Size:           {args.batch_size}")
+    print(f"  Replay Capacity:      {args.buffer_capacity}")
+    print(f"  Temp Moves:           {args.temp_moves}")
+    print(f"  Epochs / Pass:        {args.epochs}")
+    print(f"  Checkpoint Interval:  {args.checkpoint_interval}")
+    print(f"  Output Directory:     {args.output_dir}\n")
+
+    action_space_size = args.board_size * args.board_size
+    env = HexEnv(board_size=args.board_size)
     
-    # Deeper architecture for competitive long-haul performance
     model = MuZeroModels(
-        board_size=board_size,
+        board_size=args.board_size,
         action_space_size=action_space_size,
-        latent_channels=64,
-        num_res_blocks=5
+        latent_channels=args.latent_channels,
+        num_res_blocks=args.num_blocks
     )
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    replay_buffer = ExperienceReplayBuffer(capacity=args.buffer_capacity)
 
-    # Ensure checkpoints directory exists
-    base_dir = os.path.dirname(os.path.abspath(__file__))
-    checkpoint_dir = os.path.join(base_dir, "checkpoints")
+    # Setup directories
+    output_dir = os.path.abspath(args.output_dir)
+    checkpoint_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    trajectory_data = []
-
-    # 1. Self-Play Trajectory Collection with tqdm progress bar
-    print("--- Phase 1: Self-Play Trajectory Generation ---")
-    pbar = tqdm(range(num_games), desc="MuZero Self-Play Games", unit="game")
+    print("--- Starting Self-Play & Neural Optimization Loop ---")
+    pbar = tqdm(range(args.num_games), desc="MuZero Training Loop", unit="game")
 
     for game_idx in pbar:
         obs = env.reset()
         game_history = []
         done = False
-        step_count = 0
+        move_count = 0
 
         while not done:
             obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
             legal = env.legal_actions()
 
             mcts = LatentMCTS(model=model, c_puct=1.25)
-            root = asyncio.run(mcts.search(obs_tensor, legal, num_simulations=mcts_simulations_per_move))
+            root = asyncio.run(mcts.search(
+                obs_tensor,
+                legal,
+                num_simulations=args.sims_per_move,
+                add_dirichlet_noise=True,
+                dirichlet_alpha=0.3,
+                dirichlet_fraction=0.25
+            ))
 
             # Build target policy vector from visit counts
             target_policy = np.zeros(action_space_size, dtype=np.float32)
@@ -73,16 +102,19 @@ def train_self_play(
                 for act in legal:
                     target_policy[act] = 1.0 / len(legal)
 
-            # Sample action proportional to visit counts
+            # Temperature Sampling:
+            # First `temp_moves` moves: sample action probabilistically tau = 1.0
+            # After `temp_moves`: greedy action selection argmax(N)
             actions = list(root.children.keys())
             visits = [root.children[a].visit_count for a in actions]
-            if sum(visits) > 0:
+
+            if move_count < args.temp_moves and sum(visits) > 0:
                 probs = [v / sum(visits) for v in visits]
                 chosen_action = np.random.choice(actions, p=probs)
             else:
-                chosen_action = random.choice(legal)
+                chosen_action = max(actions, key=lambda a: root.children[a].visit_count)
 
-            # Record step history
+            # Record step
             player_at_step = env.current_player
             game_history.append({
                 "obs": obs,
@@ -93,68 +125,65 @@ def train_self_play(
 
             # Step Environment
             obs, reward, done = env.step(chosen_action)
-            step_count += 1
+            move_count += 1
 
         winner = env.winner
 
-        # Assign target values (+1 for winner, -1 for loser)
+        # Push game transitions to Replay Buffer with target values
         for sample in game_history:
             target_val = 1.0 if sample["player"] == winner else -1.0
-            trajectory_data.append((
-                sample["obs"],
-                sample["action"],
-                sample["target_policy"],
-                target_val
-            ))
+            replay_buffer.push(sample["obs"], sample["target_policy"], target_val)
 
-        pbar.set_postfix({"Steps": step_count, "Winner": f"P{winner}", "States": len(trajectory_data)})
+        pbar.set_postfix({
+            "Moves": move_count,
+            "Winner": f"P{winner}",
+            "Buffer": len(replay_buffer)
+        })
 
-        # Save checkpoint every 10 games
-        if (game_idx + 1) % 10 == 0:
+        # Train model on sampled mini-batches from Replay Buffer
+        if len(replay_buffer) >= min(args.batch_size, 16):
+            model.train()
+            for epoch in range(args.epochs):
+                b_obs, b_policy, b_value = replay_buffer.sample(args.batch_size)
+                val_pred, rw_pred, policy_logits, _ = model.initial_inference(b_obs)
+
+                # Policy & Value Losses
+                policy_loss = -torch.mean(torch.sum(b_policy * torch.log_softmax(policy_logits, dim=-1), dim=-1))
+                value_loss = torch.mean((val_pred - b_value) ** 2)
+                total_loss = policy_loss + value_loss
+
+                optimizer.zero_grad()
+                total_loss.backward()
+                optimizer.step()
+
+        # Save checkpoint every checkpoint_interval games
+        if (game_idx + 1) % args.checkpoint_interval == 0:
             chk_path = os.path.join(checkpoint_dir, f"model_checkpoint_{game_idx + 1}.pth")
             torch.save(model.state_dict(), chk_path)
             tqdm.write(f"  💾 Saved checkpoint: {chk_path}")
 
-    # 2. Neural Network Optimization Pass
-    print(f"\n--- Phase 2: Neural Network Optimization ({len(trajectory_data)} self-play states) ---")
-    model.train()
-
-    batch_obs = torch.tensor(np.array([d[0] for d in trajectory_data]), dtype=torch.float32)
-    batch_target_policy = torch.tensor(np.array([d[2] for d in trajectory_data]), dtype=torch.float32)
-    batch_target_value = torch.tensor(np.array([d[3] for d in trajectory_data]), dtype=torch.float32).unsqueeze(1)
-
-    loss_logs = []
-
-    for epoch in range(1, epochs_per_game_batch + 1):
-        value, reward, policy_logits, latent_state = model.initial_inference(batch_obs)
-
-        # Policy Loss: CrossEntropy / KL Loss
-        policy_loss = -torch.mean(torch.sum(batch_target_policy * torch.log_softmax(policy_logits, dim=-1), dim=-1))
-        # Value Loss: Mean Squared Error
-        value_loss = torch.mean((value - batch_target_value) ** 2)
-
-        total_loss = policy_loss + value_loss
-
-        optimizer.zero_grad()
-        total_loss.backward()
-        optimizer.step()
-
-        log_str = f"  Epoch {epoch}/{epochs_per_game_batch} - Total Loss: {total_loss.item():.4f} | Policy Loss: {policy_loss.item():.4f} | Value Loss: {value_loss.item():.4f}"
-        print(log_str)
-        loss_logs.append(log_str)
-
     # Save final model weights
-    save_path = os.path.join(base_dir, "model_weights.pth")
+    save_path = os.path.join(output_dir, "model_weights.pth")
     torch.save(model.state_dict(), save_path)
-    print(f"\n🏆 Long-haul training complete! Saved master weights to: {save_path}")
+    print(f"\n🏆 Training complete! Master weights saved to: {save_path}")
+    return replay_buffer
 
-    return loss_logs
+def parse_args():
+    parser = argparse.ArgumentParser(description="MuZero Self-Play Reinforcement Learning Trainer for Hex")
+    parser.add_argument("--board-size", type=int, default=7, help="Grid size of Hex board (default: 7)")
+    parser.add_argument("--num-games", type=int, default=300, help="Total self-play games (default: 300)")
+    parser.add_argument("--sims-per-move", type=int, default=400, help="MCTS simulations per move (default: 400)")
+    parser.add_argument("--num-blocks", type=int, default=8, help="Number of Residual Blocks in CNN (default: 8)")
+    parser.add_argument("--latent-channels", type=int, default=96, help="Latent feature channels (default: 96)")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Optimizer learning rate (default: 0.001)")
+    parser.add_argument("--batch-size", type=int, default=64, help="Replay buffer mini-batch size (default: 64)")
+    parser.add_argument("--buffer-capacity", type=int, default=10000, help="Replay buffer capacity (default: 10000)")
+    parser.add_argument("--temp-moves", type=int, default=6, help="Temperature sampling moves at start (default: 6)")
+    parser.add_argument("--epochs", type=int, default=5, help="Epochs per game batch (default: 5)")
+    parser.add_argument("--checkpoint-interval", type=int, default=10, help="Game interval for checkpoints (default: 10)")
+    parser.add_argument("--output-dir", type=str, default="backend", help="Directory to save weights & checkpoints (default: backend)")
+    return parser.parse_args()
 
 if __name__ == "__main__":
-    train_self_play(
-        num_games=100,
-        mcts_simulations_per_move=200,
-        epochs_per_game_batch=5,
-        learning_rate=1e-3,
-        board_size=7
-    )
+    cli_args = parse_args()
+    train_self_play(cli_args)

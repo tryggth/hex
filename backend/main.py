@@ -1,4 +1,5 @@
 import os
+import sys
 import json
 import asyncio
 import numpy as np
@@ -6,6 +7,8 @@ import torch
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.staticfiles import StaticFiles
 
+# Ensure backend directory is in sys.path
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from muzero_nets import MuZeroModels
 from latent_mcts import LatentMCTS
 

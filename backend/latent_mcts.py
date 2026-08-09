@@ -28,7 +28,17 @@ class LatentMCTS:
         u_value = self.c_puct * child.prior * (math.sqrt(parent_visit_count) / (1 + child.visit_count))
         return q_value + u_value
 
-    async def search(self, initial_state_tensor: torch.Tensor, legal_actions: list, num_simulations: int = 50, websocket=None, stop_event=None):
+    async def search(
+        self,
+        initial_state_tensor: torch.Tensor,
+        legal_actions: list,
+        num_simulations: int = 50,
+        websocket=None,
+        stop_event=None,
+        add_dirichlet_noise: bool = False,
+        dirichlet_alpha: float = 0.3,
+        dirichlet_fraction: float = 0.25
+    ):
         self.model.eval()
         device = initial_state_tensor.device
         board_size = initial_state_tensor.shape[-1]
@@ -53,6 +63,13 @@ class LatentMCTS:
         for act in legal_actions:
             norm_prior = (legal_priors[act] / total_p_sum) if total_p_sum > 0 else (1.0 / len(legal_actions))
             root.children[act] = Node(prior=norm_prior, reward=0.0, hidden_state=None)
+
+        # Apply Dirichlet noise to root priors if requested (exploration enhancement)
+        if add_dirichlet_noise and len(root.children) > 0:
+            import numpy as np
+            noise = np.random.dirichlet([dirichlet_alpha] * len(root.children))
+            for idx, (act, child) in enumerate(root.children.items()):
+                child.prior = (1.0 - dirichlet_fraction) * child.prior + dirichlet_fraction * noise[idx]
 
         # 2. Main MCTS Simulation Loop
         for sim in range(num_simulations):

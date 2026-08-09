@@ -1,0 +1,37 @@
+================================================================================
+CLI & REPLAY BUFFER VERIFICATION REPORT
+================================================================================
+
+1. EXPERIENCE REPLAY BUFFER TEST:
+--------------------------------------------------------------------------------
+- Buffer Push & Sample: PASS
+- Sampled Observation Shape: (4, 3, 5, 5)
+- Sampled Policy Shape:      (4, 25)
+- Sampled Value Shape:       (4, 1)
+
+2. DRY RUN TRAINING TEST:
+--------------------------------------------------------------------------------
+- Executed 2-game dry run with Dirichlet noise & Temperature sampling: PASS
+- Transitions Pushed to Replay Buffer: 43 samples.
+- PyTorch Mini-Batch Sampling & Backprop: PASS
+
+3. CLI ARGUMENTS & DEFAULTS SUMMARY:
+--------------------------------------------------------------------------------
+Available Command-Line Flags in backend/train.py:
+  --board-size INT          Grid size of Hex board (default: 7)
+  --num-games INT           Total self-play games (default: 300)
+  --sims-per-move INT       MCTS simulations per move (default: 400)
+  --num-blocks INT          Number of Residual Blocks in CNN (default: 8)
+  --latent-channels INT     Latent feature channels (default: 96)
+  --lr FLOAT                Optimizer learning rate (default: 0.001)
+  --batch-size INT          Replay buffer mini-batch size (default: 64)
+  --buffer-capacity INT     Replay buffer capacity (default: 10000)
+  --temp-moves INT          Temperature sampling moves at start (default: 6)
+  --epochs INT              Epochs per game batch (default: 5)
+  --checkpoint-interval INT Game interval for checkpoints (default: 10)
+  --output-dir STR          Directory for weights & checkpoints (default: backend)
+
+4. OVERALL STATUS:
+--------------------------------------------------------------------------------
+ALL CLI TESTS PASSED SUCCESSFULLY! Codebase ready for overnight training.
+================================================================================
