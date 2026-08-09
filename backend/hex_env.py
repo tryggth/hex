@@ -123,3 +123,16 @@ class HexEnv:
         obs[2] = 1.0 if self.current_player == 1 else 0.0
 
         return obs
+
+    def clone(self):
+        new_env = HexEnv(self.board_size)
+        new_env.board = self.board.copy()
+        
+        # Deep copy UnionFind
+        new_env.uf.parent = self.uf.parent.copy()
+        new_env.uf.rank = self.uf.rank.copy()
+        
+        new_env.current_player = self.current_player
+        new_env.winner = self.winner
+        new_env.moves_made = self.moves_made
+        return new_env
