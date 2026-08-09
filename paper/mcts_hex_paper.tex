@@ -6,6 +6,8 @@
 \usepackage{hyperref}
 \usepackage{setspace}
 \usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
 \setstretch{1.15}
 
 \hypersetup{
@@ -24,7 +26,7 @@
 \maketitle
 
 \begin{abstract}
-This paper explores the mathematical foundations and practical implementation of Monte Carlo Tree Search (MCTS). We contextualize the algorithm through the game of Hex, a connection game with profound topological implications. By examining the historical development of both the game and the algorithm, we detail why deterministic search methods fail in high-complexity spaces and how MCTS overcomes these bounds via probabilistic sampling. We further discuss zero-knowledge variants, broader applications in computational mathematics, and the architecture of an interactive MCTS Hex demonstration deployed as a client-side Progressive Web Application (PWA).
+This paper explores the mathematical foundations and practical implementation of Monte Carlo Tree Search (MCTS). We contextualize the algorithm through the game of Hex, a connection game with profound topological implications. By examining the historical development of both the game and the algorithm, we detail why deterministic search methods fail in high-complexity spaces and how MCTS overcomes these bounds via probabilistic sampling. We detail two distinct computational paradigms: classical MCTS backed by an $\mathcal{O}(\alpha(V))$ Union-Find explicit simulator, and zero-knowledge Latent MCTS (MuZero) operating within a learned neural manifold. Finally, we present the architecture of an interactive demonstration deployed as a client-side Progressive Web Application (PWA) with a WebSocket-enabled PyTorch backend.
 \end{abstract}
 
 \section{Introduction}
@@ -59,12 +61,100 @@ MCTS navigates a state space modeled as a directed acyclic graph. It builds a se
     \end{equation}
     where $w_i$ is the number of wins for child node $i$, $n_i$ is its visit count, $N_i$ is the parent node's visit count, and $c$ is the exploration constant.
     \item \textbf{Expansion:} If the selected leaf node is not a terminal state, the tree is expanded by generating valid child nodes representing legal moves.
-    \item \textbf{Simulation (Rollout):} From a newly expanded node, a simulation is run to a terminal state. In classical MCTS, this involves uniform random play. Because Hex guarantees a winner without infinite loops, these stochastic rollouts are computationally efficient and highly effective.
+    \item \textbf{Simulation (Rollout):} From a newly expanded node, a simulation is run to a terminal state using a random rollout policy.
     \item \textbf{Backpropagation:} The terminal outcome is propagated backward up the traversed path, updating $n_i$ and $w_i$ for each node.
 \end{enumerate}
 
-\subsection{Zero-Knowledge Variants: Learning the Rules}
-Classical MCTS requires a perfect environment simulator (the game rules) to perform random rollouts. However, modern variants have abstracted this requirement. Algorithms such as MuZero (Schrittwieser et al., 2020) do not require \textit{a priori} knowledge of the environment's transition dynamics. By applying MCTS entirely within a lower-dimensional latent space modeled by a neural network, the algorithm navigates complex domains without explicitly defined mathematical rules, relying purely on internally learned transition models.
+\begin{algorithm}[H]
+\caption{Classical Explicit MCTS (Disjoint-Set Rollout Engine)}
+\begin{algorithmic}[1]
+\Function{ClassicalMCTS}{$s_0, K$}
+    \State Initialize root node $R$ with state $s_0$
+    \For{$k \gets 1 \text{ to } K$}
+        \State $node \gets R$, $state \gets s_0$
+        \While{$node \text{ is fully expanded and not terminal}$} \Comment{1. Selection}
+            \State $action \gets \arg\max_{a} \left[ \frac{w(a)}{n(a)} + c \sqrt{\frac{\ln N(node)}{n(a)}} \right]$
+            \State $state \gets \text{ApplyAction}(state, action)$
+            \State $node \gets node.children[action]$
+        \EndWhile
+        \If{$node \text{ is not terminal}$} \Comment{2. Expansion}
+            \State $action \gets \text{UnvisitedAction}(node)$
+            \State $state \gets \text{ApplyAction}(state, action)$
+            \State $node \gets \text{AddChild}(node, action)$
+        \EndIf
+        \State $sim\_state \gets \text{Copy}(state)$ \Comment{3. Simulation}
+        \While{not $\text{UnionFindIsTerminal}(sim\_state)$}
+            \State $a_{rand} \gets \text{RandomLegalMove}(sim\_state)$
+            \State $sim\_state \gets \text{ApplyAction}(sim\_state, a_{rand})$
+        \EndWhile
+        \State $reward \gets \text{EvaluateOutcome}(sim\_state)$
+        \While{$node \neq \text{Null}$} \Comment{4. Backpropagation}
+            \State $node.n \gets node.n + 1$
+            \State $node.w \gets node.w + reward$
+            \State $reward \gets -reward$ \Comment{Alternating Minimax Perspective}
+            \State $node \gets node.parent$
+        \EndWhile
+    \EndFor
+    \State \Return $\arg\max_{a} n(a)$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Zero-Knowledge Variants: Latent MCTS (The MuZero Paradigm)}
+Classical MCTS requires an explicit environment simulator (the game rulebook) to simulate rollouts. In contrast, modern zero-knowledge algorithms such as MuZero (Schrittwieser et al., 2020) operate entirely within a learned latent state space.
+
+MuZero decomposes the environment into three deep PyTorch neural networks parameterized by $\theta$:
+\begin{enumerate}
+    \item \textbf{Representation Network ($h_\theta$):} Embeds historical observations $o_1, \dots, o_t$ into an initial spatial latent state $s_0$:
+    \begin{equation}
+        s_0 = h_\theta(o_1, \dots, o_t)
+    \end{equation}
+    \item \textbf{Dynamics Network ($g_\theta$):} Predicts the next latent state $s_k$ and intermediate reward $r_k$ given a current latent state $s_{k-1}$ and candidate action $a_k$:
+    \begin{equation}
+        r_k, s_k = g_\theta(s_{k-1}, a_k)
+    \end{equation}
+    \item \textbf{Prediction Network ($f_\theta$):} Computes policy priors $\mathbf{p}_k$ and scalar value estimate $v_k \in [-1, 1]$ directly from a latent state $s_k$:
+    \begin{equation}
+        \mathbf{p}_k, v_k = f_\theta(s_k)
+    \end{equation}
+\end{enumerate}
+
+During search, Latent MCTS selects actions using the Predictor Upper Confidence Bound (PUCT) formula:
+\begin{equation}
+    \text{PUCT}(s, a) = Q(s, a) + c_{\text{puct}} P(s, a) \frac{\sqrt{N(s)}}{1 + N(s, a)}
+\end{equation}
+where $P(s, a)$ is supplied by the prediction head $f_\theta$. Because search occurs entirely inside the continuous manifold defined by $h_\theta$ and $g_\theta$, the algorithm plans effectively without querying environment rules or performing physical rollouts.
+
+\begin{algorithm}[H]
+\caption{Latent MCTS (MuZero Latent Space Paradigm)}
+\begin{algorithmic}[1]
+\Function{LatentMCTS}{$o_{raw}, K$}
+    \State $s_0 \gets h_\theta(o_{raw})$ \Comment{1. Representation Embedding}
+    \State $\mathbf{p}_0, v_0 \gets f_\theta(s_0)$
+    \State Initialize root $R$ with state $s_0$ and priors $\mathbf{p}_0$
+    \For{$k \gets 1 \text{ to } K$}
+        \State $node \gets R$, $path \gets []$
+        \While{$node \text{ is expanded}$} \Comment{2. Latent Selection}
+            \State $action \gets \arg\max_{a} \left[ Q(node, a) + c_{\text{puct}} P(node, a) \frac{\sqrt{N(node)}}{1 + N(node, a)} \right]$
+            \State Append $(node, action)$ to $path$
+            \State $node \gets node.children[action]$
+        \EndWhile
+        \State $(parent, a_{last}) \gets path[-1]$ \Comment{3. Recurrent Dynamics Expansion}
+        \State $r_{leaf}, s_{leaf} \gets g_\theta(parent.hidden\_state, a_{last})$
+        \State $\mathbf{p}_{leaf}, v_{leaf} \gets f_\theta(s_{leaf})$
+        \State $node.hidden\_state \gets s_{leaf}$
+        \State Expand $node.children$ with priors $\mathbf{p}_{leaf}$
+        \State $val \gets v_{leaf}$
+        \For{each $(n, a)$ in Reversed($path$)} \Comment{4. Alternating Backpropagation}
+            \State $n.children[a].visit\_count \gets n.children[a].visit\_count + 1$
+            \State $n.children[a].value\_sum \gets n.children[a].value\_sum + val$
+            \State $val \gets -val$ \Comment{Adversarial Zero-Sum Inversion}
+        \EndFor
+    \EndFor
+    \State \Return $\arg\max_{a} N(R, a)$
+\EndFunction
+\end{algorithmic}
+\end{algorithm}
 
 \section{Broader Applications of MCTS}
 Because MCTS is a generic decision-making framework capable of navigating arbitrary combinatorial spaces, its applications extend far beyond zero-sum games:
@@ -75,7 +165,7 @@ Because MCTS is a generic decision-making framework capable of navigating arbitr
 \end{itemize}
 
 \section{Implementation in the Interactive Demonstration}
-The accompanying demonstration project\footnote{Live application available at \url{https://tryggth.github.io/hex/}, with source code hosted at \url{https://github.com/tryggth/hex}.} is deployed statically via GitHub Pages as a client-side Progressive Web App (PWA). The application exposes the internal mathematics of the pure MCTS engine directly to the user, generating strategies from scratch in real time without pre-computed lookup tables or neural networks.
+The accompanying demonstration project\footnote{Live application available at \url{https://tryggth.github.io/hex/}, with source code hosted at \url{https://github.com/tryggth/hex}.} operates across two distinct mathematical regimes: an offline client-side Progressive Web Application (PWA) executing explicit Union-Find simulations, and a WebSocket-connected Python backend running deep PyTorch Latent MCTS.
 
 \subsection{Numerical Bounding of the Combinatorial Explosion}
 A central feature of the application is a ``Cosmic Inspection Panel'' that dynamically calculates $E!$, the number of possible future playout sequences (where $E$ is the number of empty cells). 
@@ -87,10 +177,10 @@ On an $11 \times 11$ board, calculating $E!$ trivially exceeds the maximum repre
 The application extracts the exponent as $X = \lfloor \sum \log_{10}(i) \rfloor$ and the mantissa as $M = 10^{\sum \log_{10}(i) - X}$. This allows the UI to safely format the vast state space (e.g., $1.24 \times 10^{61}$) and map it against cosmic scale thresholds.
 
 \subsection{Efficient Win Detection via Disjoint-Set Data Structures}
-Because MCTS requires thousands of random rollouts per second, terminal win detection must be exceptionally fast. Re-evaluating path connectivity using Breadth-First Search at every move is computationally prohibitive. The application addresses this by implementing a Disjoint-Set (Union-Find) data structure with path compression and union by rank (Tarjan, 1975). Adjacent cells are merged into connected components in near-constant amortized time $\mathcal{O}(\alpha(V))$, allowing instant verification of top-to-bottom or left-to-right connectivity.
+In the offline explicit simulator regime, terminal win detection must be exceptionally fast. Re-evaluating path connectivity using Breadth-First Search at every move is computationally prohibitive. The application addresses this by implementing a Disjoint-Set (Union-Find) data structure with path compression and union by rank (Tarjan, 1975). Adjacent cells are merged into connected components in near-constant amortized time $\mathcal{O}(\alpha(V))$, allowing instant verification of top-to-bottom or left-to-right connectivity.
 
 \subsection{Non-Linear Scaling of the Attention Heatmap}
-During real-time strategy generation, the application visualizes the algorithm's search density by modulating the internal fill color of the hexagonal cells on the HTML5 canvas. Because MCTS visit counts ($v$) form a heavily skewed distribution, a linear color mapping would obscure secondary candidate moves. To resolve this, the interface applies a fractional power curve mapped to the normalized visit count:
+During real-time strategy generation, the application visualizes search density by modulating the internal fill color of the hexagonal cells on the HTML5 canvas. Because MCTS visit counts ($v$) form a heavily skewed distribution, a linear color mapping would obscure secondary candidate moves. To resolve this, the interface applies a fractional power curve mapped to the normalized visit count:
 \begin{equation}
     t = \left(\frac{v}{v_{\text{max}}}\right)^{0.5}
 \end{equation}
@@ -99,10 +189,10 @@ Applying the square root artificially inflates the visual weight of mid-tier can
 \subsection{The Anytime Algorithm Property and Parameterization}
 Because MCTS operates iteratively rather than deterministically, it possesses the ``anytime'' algorithm property—meaning it can be halted at any arbitrary millisecond and still return a mathematically rigorous best guess based on the asymmetrical tree built thus far. The UI actively demonstrates this theorem via a ``Stop Strategizing'' interrupt feature. By manually halting the execution thread, the application ceases iterations, evaluates the current root tree, selects the candidate node with the highest visit count, and immediately yields control back to the human player.
 
-Furthermore, users can manipulate the exploration parameter $c$ from Equation (1). By dynamically adjusting this value via a UI slider, observers can perturb the algorithm. Setting $c \approx 0$ forces a greedy policy prone to local optima, while high values induce undirected noise, illustrating empirically why the default $c = 1.40 \approx \sqrt{2}$ maintains theoretically optimal convergence.
+Furthermore, users can manipulate the exploration parameter $c$ from Equation (1). By dynamically adjusting this value via a UI slider, observers can perturb the algorithm. Setting $c \approx 0$ forces a greedy policy prone to local optima, while high values induce undirected noise, illustrating empirically why default exploration constants maintain theoretically optimal convergence.
 
 \section{Conclusion}
-Monte Carlo Tree Search represents a paradigm shift in navigating combinatorial complexity. By substituting exhaustive calculation with probabilistically bounded sampling, MCTS effectively deduces mathematically robust strategies without relying on heuristic evaluation functions. The provided PWA Hex demonstration serves as a tangible manifestation of these principles, illustrating how advanced topological reasoning, numerical precision, and strategic depth can emerge organically from the law of large numbers.
+Monte Carlo Tree Search represents a paradigm shift in navigating combinatorial complexity. By substituting exhaustive calculation with probabilistically bounded sampling, MCTS effectively deduces mathematically robust strategies without relying on pre-computed evaluation tables. The dual-mode Hex application serves as a tangible manifestation of these principles, contrasting an explicit $\mathcal{O}(\alpha(V))$ Union-Find engine with a continuous neural latent manifold.
 
 \section*{References}
 
@@ -113,7 +203,6 @@ Coulom, R. (2006). Efficient selectivity and backup operators in Monte-Carlo tre
 Fawzi, A., Balog, M., Huang, A., Hubert, T., Romera-Paredes, B., Barekatain, M., Novikov, A., Rusu, A. A., Ruiz, F. J., Pozdnyakov, A., Woods, G., Prokopec, A., Richard, R., Yang, R., Bamiec, M., Balle, M., Hassabis, D., \& Kohli, P. (2022). Discovering faster matrix multiplication algorithms with reinforcement learning. \textit{Nature}, \textit{610}(7930), 47--53. \url{https://doi.org/10.1038/s41586-022-05172-4}
 
 Gale, D. (1979). The Game of Hex and the Brouwer Fixed-Point Theorem. \textit{The American Mathematical Monthly}, \textit{86}(10), 818--827. \url{https://doi.org/10.1080/00029890.1979.11994922}
-Cited by: 399
 
 Gardner, M. (1959). \textit{The Scientific American Book of Mathematical Puzzles and Diversions}. Simon and Schuster.
 
@@ -122,14 +211,11 @@ Kocsis, L., \& Szepesv\'ari, C. (2006). Bandit based Monte-Carlo planning. In \t
 Metropolis, N., \& Ulam, S. (1949). The Monte Carlo method. \textit{Journal of the American Statistical Association}, \textit{44}(247), 335--341. \url{https://doi.org/10.1080/01621459.1949.10483310}
 
 Reisch, S. (1981). Hex ist PSPACE-vollst\"andig. \textit{Acta Informatica}, \textit{15}(2), 167--191. \url{https://doi.org/10.1007/BF00288964}
-Cited by: 106
 
 Schrittwieser, J., Antonoglou, I., Hubert, T., Simonyan, K., Sifre, L., Schmitt, S., Guez, A., Lockhart, E., Hassabis, D., Graepel, T., Lillicrap, T., \& Silver, D. (2020). Mastering Atari, Go, chess and shogi by planning with a learned model. \textit{Nature}, \textit{588}(7839), 604--609. \url{https://doi.org/10.1038/s41586-020-03051-4}
-Cited by: 4035
 
 Silver, D., Huang, A., Maddison, C. J., Guez, A., Sifre, L., van den Driessche, G., Schrittwieser, J., Antonoglou, I., Panneershelvam, V., Lanctot, M., Dieleman, S., Grewe, D., Nham, J., Kalchbrenner, N., Sutskever, I., Lillicrap, T., Leach, M., Kavukcuoglu, K., Graepel, T., \& Hassabis, D. (2016). Mastering the game of Go with deep neural networks and tree search. \textit{Nature}, \textit{529}(7587), 484--489. \url{https://doi.org/10.1038/nature16961}
 
 Tarjan, R. E. (1975). Efficiency of a good but not linear set union algorithm. \textit{Journal of the ACM}, \textit{22}(2), 215--225. \url{https://doi.org/10.1145/321879.321884}
-Cited by: 2162
 
 \end{document}
