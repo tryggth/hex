@@ -12,7 +12,7 @@ CLI & REPLAY BUFFER VERIFICATION REPORT
 2. DRY RUN TRAINING TEST:
 --------------------------------------------------------------------------------
 - Executed 2-game dry run with Dirichlet noise & Temperature sampling: PASS
-- Transitions Pushed to Replay Buffer: 43 samples.
+- Transitions Pushed to Replay Buffer: 42 samples.
 - PyTorch Mini-Batch Sampling & Backprop: PASS
 
 3. CLI ARGUMENTS & DEFAULTS SUMMARY:

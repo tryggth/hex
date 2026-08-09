@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import math
 import asyncio
 import numpy as np
 import torch
@@ -22,25 +23,32 @@ if not os.path.exists(STATIC_DIR):
 
 print(f"[MuZero Backend] Hosting static PWA from: {STATIC_DIR}")
 
-# Global PyTorch MuZero Neural Model (Deep 64-channel, 5 ResBlock architecture)
+# Dynamically inspect saved model weights to match exact architecture and board size
+WEIGHTS_PATH = os.path.join(BASE_DIR, "model_weights.pth")
 BOARD_SIZE = 7
 ACTION_SPACE_SIZE = 49
-model = MuZeroModels(
-    board_size=BOARD_SIZE,
-    action_space_size=ACTION_SPACE_SIZE,
-    latent_channels=64,
-    num_res_blocks=5
-)
+LATENT_CHANNELS = 32
+NUM_RES_BLOCKS = 2
 
-WEIGHTS_PATH = os.path.join(BASE_DIR, "model_weights.pth")
 if os.path.exists(WEIGHTS_PATH):
     try:
-        model.load_state_dict(torch.load(WEIGHTS_PATH, map_location="cpu"))
-        print(f"[MuZero Backend] Loaded PyTorch master weights from: {WEIGHTS_PATH}")
+        saved_weights = torch.load(WEIGHTS_PATH, map_location="cpu")
+        if "prediction.policy_fc.weight" in saved_weights:
+            ACTION_SPACE_SIZE = saved_weights["prediction.policy_fc.weight"].shape[0]
+            BOARD_SIZE = int(math.sqrt(ACTION_SPACE_SIZE))
+        if "representation.conv_init.weight" in saved_weights:
+            LATENT_CHANNELS = saved_weights["representation.conv_init.weight"].shape[0]
+            NUM_RES_BLOCKS = len([k for k in saved_weights.keys() if "representation.res_blocks" in k and "conv1.weight" in k])
+        
+        model = MuZeroModels(board_size=BOARD_SIZE, action_space_size=ACTION_SPACE_SIZE, latent_channels=LATENT_CHANNELS, num_res_blocks=NUM_RES_BLOCKS)
+        model.load_state_dict(saved_weights)
+        print(f"[MuZero Backend] Loaded PyTorch master weights ({BOARD_SIZE}x{BOARD_SIZE}, channels={LATENT_CHANNELS}, res_blocks={NUM_RES_BLOCKS}) from: {WEIGHTS_PATH}")
     except Exception as e:
         print(f"[MuZero Backend] Warning: Could not load weights from {WEIGHTS_PATH}: {e}")
+        model = MuZeroModels(board_size=BOARD_SIZE, action_space_size=ACTION_SPACE_SIZE, latent_channels=LATENT_CHANNELS, num_res_blocks=NUM_RES_BLOCKS)
 else:
-    print("[MuZero Backend] No pre-trained weights found; running with initialized PyTorch model.")
+    print("[MuZero Backend] No pre-trained weights found; initializing fresh model.")
+    model = MuZeroModels(board_size=BOARD_SIZE, action_space_size=ACTION_SPACE_SIZE, latent_channels=LATENT_CHANNELS, num_res_blocks=NUM_RES_BLOCKS)
 
 model.eval()
 
@@ -71,21 +79,22 @@ async def websocket_muzero(websocket: WebSocket):
 
         obs_tensor = torch.tensor(obs_np, dtype=torch.float32)
 
-        # Dynamic model scaling if board size differs from default 7x7
+        # Dynamic model scaling if board size differs from default
         active_model = model
         if size != BOARD_SIZE:
-            active_model = MuZeroModels(board_size=size, action_space_size=size*size, latent_channels=64, num_res_blocks=5)
+            active_model = MuZeroModels(board_size=size, action_space_size=size*size, latent_channels=LATENT_CHANNELS, num_res_blocks=NUM_RES_BLOCKS)
             active_model.eval()
 
         mcts_engine = LatentMCTS(model=active_model, c_puct=1.25)
 
-        # Run deep Latent MCTS search (400 simulations) with PyTorch neural network evaluations
+        # Run deep Latent MCTS search with PyTorch neural network evaluations and UI time budget
         root = await mcts_engine.search(
             initial_state_tensor=obs_tensor,
             legal_actions=legal_actions,
             num_simulations=400,
             websocket=websocket,
-            stop_event=stop_event
+            stop_event=stop_event,
+            time_limit_ms=time_limit
         )
 
         # Select action with highest visit count

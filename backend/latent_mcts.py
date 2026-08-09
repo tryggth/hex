@@ -1,4 +1,5 @@
 import math
+import time
 import asyncio
 import torch
 import torch.nn as nn
@@ -37,12 +38,14 @@ class LatentMCTS:
         stop_event=None,
         add_dirichlet_noise: bool = False,
         dirichlet_alpha: float = 0.3,
-        dirichlet_fraction: float = 0.25
+        dirichlet_fraction: float = 0.25,
+        time_limit_ms: int = None
     ):
         self.model.eval()
         device = initial_state_tensor.device
         board_size = initial_state_tensor.shape[-1]
         action_space_size = board_size * board_size
+        start_time = time.time()
 
         # 1. Initial Inference from Representation Network
         with torch.no_grad():
@@ -74,6 +77,9 @@ class LatentMCTS:
         # 2. Main MCTS Simulation Loop
         for sim in range(num_simulations):
             if stop_event and stop_event.is_set():
+                break
+
+            if time_limit_ms is not None and (time.time() - start_time) * 1000.0 >= time_limit_ms:
                 break
 
             node = root
