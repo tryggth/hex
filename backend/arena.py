@@ -78,15 +78,39 @@ async def main():
     parser.add_argument("--tolerance", type=int, default=200)
     args = parser.parse_args()
 
-    model = MuZeroModels(
-        board_size=args.board_size,
-        action_space_size=args.board_size ** 2,
-        latent_channels=96,
-        num_res_blocks=8
-    )
+    board_size = args.board_size
+    action_space_size = board_size ** 2
+    latent_channels = 96
+    num_res_blocks = 8
+
     weights_path = os.path.join(os.path.dirname(__file__), "model_weights.pth")
     if os.path.exists(weights_path):
-        model.load_state_dict(torch.load(weights_path, map_location="cpu"))
+        import math
+        saved_weights = torch.load(weights_path, map_location="cpu")
+        if "prediction.policy_fc.weight" in saved_weights:
+            action_space_size = saved_weights["prediction.policy_fc.weight"].shape[0]
+            board_size = int(math.sqrt(action_space_size))
+        if "representation.conv_init.weight" in saved_weights:
+            latent_channels = saved_weights["representation.conv_init.weight"].shape[0]
+            num_res_blocks = len([k for k in saved_weights.keys() if "representation.res_blocks" in k and "conv1.weight" in k])
+        
+        model = MuZeroModels(
+            board_size=board_size,
+            action_space_size=action_space_size,
+            latent_channels=latent_channels,
+            num_res_blocks=num_res_blocks
+        )
+        model.load_state_dict(saved_weights)
+        
+        # Override args.board_size to match the model if it was dynamically loaded
+        args.board_size = board_size
+    else:
+        model = MuZeroModels(
+            board_size=board_size,
+            action_space_size=action_space_size,
+            latent_channels=latent_channels,
+            num_res_blocks=num_res_blocks
+        )
     model.eval()
 
     tested_sims = []
