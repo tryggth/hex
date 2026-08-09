@@ -1,0 +1,18 @@
+To run the Simulation Parity Benchmark Arena:
+
+1. Install plotext:
+   pip install -r backend/requirements.txt
+
+2. Run the arena (from the repository root):
+   python backend/arena.py
+
+Optional CLI Arguments:
+- `--board-size` (default: 7)
+- `--muzero-sims` (default: 400)
+- `--pairs-per-match` (default: 5, equivalent to 10 total games)
+- `--min-sims` (default: 10)
+- `--max-sims` (default: 20000)
+- `--tolerance` (default: 200)
+
+Visualization Behavior:
+As the binary search progresses, `plotext` will draw and update a live scatter plot directly in your terminal. The plot shows the Classic MCTS simulations on the X-axis and the MuZero win rate on the Y-axis. The red horizontal line at y=0.50 acts as the target parity line. Below the plot, you will see the current binary search bracket, the tested Classic MCTS simulations, and the resulting win rate for MuZero.

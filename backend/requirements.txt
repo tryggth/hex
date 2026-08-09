@@ -4,3 +4,4 @@ websockets
 numpy
 torch
 tqdm
+plotext
