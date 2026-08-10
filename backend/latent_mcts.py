@@ -140,8 +140,7 @@ class LatentMCTS:
             value = leaf_value
             for parent, act in reversed(path):
                 child_node = parent.children[act]
-                # The value of this state is the transition reward minus the opponent's value
-                value = child_node.reward - value 
+                value = -value  # Pure alternating minimax inversion (ignore untrained reward)
                 child_node.visit_count += 1
                 child_node.value_sum += value
 
