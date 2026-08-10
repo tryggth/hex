@@ -15,23 +15,49 @@ from muzero_nets import MuZeroModels
 from latent_mcts import LatentMCTS
 
 class ExperienceReplayBuffer:
-    """Experience Replay Buffer for storing and sampling self-play transitions."""
-    def __init__(self, capacity: int = 10000):
+    """Experience Replay Buffer for storing and sampling full self-play games."""
+    def __init__(self, capacity: int = 2000):
         self.buffer = deque(maxlen=capacity)
 
-    def push(self, observation: np.ndarray, target_policy: np.ndarray, target_value: float):
-        self.buffer.append((observation, target_policy, target_value))
+    def push(self, game_history: list):
+        self.buffer.append(game_history)
 
-    def sample(self, batch_size: int):
+    def sample(self, batch_size: int, num_unroll_steps: int = 5):
         k = min(batch_size, len(self.buffer))
-        indices = np.random.choice(len(self.buffer), size=k, replace=False)
-        samples = [self.buffer[i] for i in indices]
+        games = random.choices(self.buffer, k=k)
 
-        batch_obs = torch.tensor(np.array([s[0] for s in samples]), dtype=torch.float32)
-        batch_policy = torch.tensor(np.array([s[1] for s in samples]), dtype=torch.float32)
-        batch_value = torch.tensor(np.array([s[2] for s in samples]), dtype=torch.float32).unsqueeze(1)
+        batch_obs = []
+        batch_actions = []
+        batch_policies = []
+        batch_values = []
 
-        return batch_obs, batch_policy, batch_value
+        for game in games:
+            start_idx = random.randint(0, len(game) - 1)
+            batch_obs.append(game[start_idx]["obs"])
+            
+            actions, policies, values = [], [], []
+            for i in range(num_unroll_steps + 1):
+                if start_idx + i < len(game):
+                    step = game[start_idx + i]
+                    actions.append(step["action"])
+                    policies.append(step["target_policy"])
+                    values.append(step["target_val"])
+                else:
+                    # Pad out of bounds
+                    actions.append(0)
+                    policies.append(np.zeros_like(game[0]["target_policy"]))
+                    values.append(0.0)
+
+            batch_actions.append(actions)
+            batch_policies.append(policies)
+            batch_values.append(values)
+
+        b_obs = torch.tensor(np.array(batch_obs), dtype=torch.float32)
+        b_actions = torch.tensor(np.array(batch_actions), dtype=torch.long)
+        b_policies = torch.tensor(np.array(batch_policies), dtype=torch.float32)
+        b_values = torch.tensor(np.array(batch_values), dtype=torch.float32)
+
+        return b_obs, b_actions, b_policies, b_values
 
     def __len__(self) -> int:
         return len(self.buffer)
@@ -131,8 +157,8 @@ def train_self_play(args):
 
         # Push game transitions to Replay Buffer with target values
         for sample in game_history:
-            target_val = 1.0 if sample["player"] == winner else -1.0
-            replay_buffer.push(sample["obs"], sample["target_policy"], target_val)
+            sample["target_val"] = 1.0 if sample["player"] == winner else -1.0
+        replay_buffer.push(game_history)
 
         pbar.set_postfix({
             "Moves": move_count,
@@ -140,17 +166,32 @@ def train_self_play(args):
             "Buffer": len(replay_buffer)
         })
 
-        # Train model on sampled mini-batches from Replay Buffer
-        if len(replay_buffer) >= min(args.batch_size, 16):
+        # Train model on sampled mini-batches from Replay Buffer using BPTT
+        if len(replay_buffer) >= max(1, args.batch_size // 40):
             model.train()
             for epoch in range(args.epochs):
-                b_obs, b_policy, b_value = replay_buffer.sample(args.batch_size)
-                val_pred, rw_pred, policy_logits, _ = model.initial_inference(b_obs)
+                b_obs, b_actions, b_policies, b_values = replay_buffer.sample(args.batch_size, num_unroll_steps=5)
+                val_pred, rw_pred, policy_logits, hidden_state = model.initial_inference(b_obs)
 
-                # Policy & Value Losses
-                policy_loss = -torch.mean(torch.sum(b_policy * torch.log_softmax(policy_logits, dim=-1), dim=-1))
-                value_loss = torch.mean((val_pred - b_value) ** 2)
-                total_loss = policy_loss + value_loss
+                # Initial step loss
+                p_loss = -torch.mean(torch.sum(b_policies[:, 0] * torch.log_softmax(policy_logits, dim=-1), dim=-1))
+                v_loss = torch.mean((val_pred.squeeze(-1) - b_values[:, 0]) ** 2)
+                total_loss = p_loss + v_loss
+
+                # Unrolled steps loss for Dynamics Network (g_theta)
+                for i in range(1, 6):
+                    action_step = b_actions[:, i-1]
+                    val_pred, rw_pred, policy_logits, hidden_state = model.recurrent_inference(hidden_state, action_step)
+                    
+                    # Scale gradients for hidden state
+                    hidden_state.register_hook(lambda grad: grad * 0.5)
+                    
+                    # Compute masked loss to ignore padded steps
+                    mask = (torch.sum(b_policies[:, i], dim=-1) > 0).float()
+                    p_loss_step = -torch.mean(torch.sum(b_policies[:, i] * torch.log_softmax(policy_logits, dim=-1), dim=-1))
+                    v_loss_step = torch.mean(mask * (val_pred.squeeze(-1) - b_values[:, i]) ** 2)
+                    
+                    total_loss += p_loss_step + v_loss_step
 
                 optimizer.zero_grad()
                 total_loss.backward()
