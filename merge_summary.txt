@@ -1,0 +1,47 @@
+===============================================================================
+HEX MCTS & MUZERO ENGINE: MERGE & RESEARCH PAPER UPDATE SUMMARY
+===============================================================================
+
+Date: 2026-08-10
+Branch Merged: feat/hybrid-muzero -> main
+Target Remote: https://github.com/tryggth/hex.git (main)
+
+1. REPOSITORY & MERGE STATUS
+-------------------------------------------------------------------------------
+- All enhancements, algorithmic fixes, and benchmarking suites developed on
+  `feat/hybrid-muzero` have been successfully validated, committed, and 
+  merged into `main`.
+- `main` branch pushed to remote GitHub repository without conflicts.
+
+2. DOCUMENTATION & ACADEMIC PAPER UPDATES
+-------------------------------------------------------------------------------
+A. README.md:
+   - Updated with detailed dual-mode system architecture (Offline PWA vs. Hybrid
+     PyTorch MuZero Backend).
+   - Documented core fixes: Monotonic Legal Move Scoping (Inception Bug), Reward
+     Pollution removal, and Backpropagation Through Time (BPTT) unrolling.
+   - Added setup, self-play training CLI parameters, FastAPI WebSocket launch
+     commands, and evaluation suite instructions (`arena_sprt` & `arena_logistic`).
+
+B. paper/mcts_hex_paper.tex & paper/mcts_hex_paper.pdf:
+   - Added Section 4: "Neural Optimization and Empirical Benchmarking".
+   - Formulated BPTT unrolled trajectory loss across K=5 steps:
+     L(\theta) = \sum_{k=0}^{K} ( l_p(p_{t+k}, \hat{p}_{t+k}) + l_v(v_{t+k}, \hat{v}_{t+k}) )
+     including hidden state gradient scaling (0.5x) and padded step masking.
+   - Formulated Wald's Sequential Probability Ratio Test (SPRT) log-likelihood
+     decision bounds (A = ln((1-\beta)/\alpha), B = ln(\beta/(1-\alpha))) for
+     statistically testing H0 (p <= 0.50) vs H1 (p >= 0.55).
+   - Formulated 4-parameter Sigmoid Logistic Regression CSE model:
+     P(win) = 1 / (1 + e^{-k(ln(X) - ln(CSE))})
+     explaining how non-linear regression over 8 logarithmic anchor points 
+     (X in [1..400]) provides superior empirical stability over binary search.
+   - Compiled PDF paper successfully using pdfLaTeX.
+
+3. EVALUATION & BENCHMARKING SUITES COMMITTED
+-------------------------------------------------------------------------------
+- backend/arena_sprt.py: Sequential Probability Ratio Test against random play.
+- backend/arena_logistic.py: Logistic CSE evaluator with real-time ANSI 
+  colorized 7x7 Hex board dashboard and plotext regression chart.
+- SPRT_CSE_SUMMARY.md: Executive summary report in project root.
+
+===============================================================================
