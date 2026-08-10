@@ -23,8 +23,17 @@ if not os.path.exists(STATIC_DIR):
 
 print(f"[MuZero Backend] Hosting static PWA from: {STATIC_DIR}")
 
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned weights")
+args, _ = parser.parse_known_args()
+
 # Dynamically inspect saved model weights to match exact architecture and board size
-WEIGHTS_PATH = os.path.join(BASE_DIR, "model_weights.pth")
+if args.run_id:
+    WEIGHTS_PATH = os.path.join(BASE_DIR, "runs", args.run_id, "model_weights.pth")
+else:
+    WEIGHTS_PATH = os.path.join(BASE_DIR, "model_weights.pth")
 BOARD_SIZE = 7
 ACTION_SPACE_SIZE = 49
 LATENT_CHANNELS = 32

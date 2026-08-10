@@ -40,6 +40,7 @@ async def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--board-size", type=int, default=7)
     parser.add_argument("--muzero-sims", type=int, default=400)
+    parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned weights")
     args = parser.parse_args()
 
     board_size = args.board_size
@@ -47,7 +48,10 @@ async def main():
     latent_channels = 96
     num_res_blocks = 8
 
-    weights_path = os.path.join(os.path.dirname(__file__), "model_weights.pth")
+    if args.run_id:
+        weights_path = os.path.join(os.path.dirname(__file__), "runs", args.run_id, "model_weights.pth")
+    else:
+        weights_path = os.path.join(os.path.dirname(__file__), "model_weights.pth")
     if os.path.exists(weights_path):
         saved_weights = torch.load(weights_path, map_location="cpu")
         if "prediction.policy_fc.weight" in saved_weights:

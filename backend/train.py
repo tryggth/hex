@@ -87,10 +87,14 @@ def train_self_play(args):
         num_res_blocks=args.num_blocks
     )
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_games)
     replay_buffer = ExperienceReplayBuffer(capacity=args.buffer_capacity)
 
     # Setup directories
-    output_dir = os.path.abspath(args.output_dir)
+    if args.run_id:
+        output_dir = os.path.abspath(os.path.join(args.output_dir, "runs", args.run_id))
+    else:
+        output_dir = os.path.abspath(args.output_dir)
     checkpoint_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -100,6 +104,7 @@ def train_self_play(args):
     for game_idx in pbar:
         obs = env.reset()
         game_history = []
+        game_history_sym = []
         done = False
         move_count = 0
 
@@ -149,6 +154,19 @@ def train_self_play(args):
                 "player": player_at_step
             })
 
+            # Symmetry: 180-degree rotation
+            obs_sym = np.flip(obs, axis=(1, 2)).copy()
+            policy_2d = target_policy.reshape((args.board_size, args.board_size))
+            target_policy_sym = np.flip(policy_2d, axis=(0, 1)).flatten().copy()
+            chosen_action_sym = (args.board_size * args.board_size - 1) - chosen_action
+
+            game_history_sym.append({
+                "obs": obs_sym,
+                "action": int(chosen_action_sym),
+                "target_policy": target_policy_sym,
+                "player": player_at_step
+            })
+
             # Step Environment
             obs, reward, done = env.step(chosen_action)
             move_count += 1
@@ -156,14 +174,19 @@ def train_self_play(args):
         winner = env.winner
 
         # Push game transitions to Replay Buffer with target values
-        for sample in game_history:
-            sample["target_val"] = 1.0 if sample["player"] == winner else -1.0
+        for sample, sample_sym in zip(game_history, game_history_sym):
+            val = 1.0 if sample["player"] == winner else -1.0
+            sample["target_val"] = val
+            sample_sym["target_val"] = val
+            
         replay_buffer.push(game_history)
+        replay_buffer.push(game_history_sym)
 
         pbar.set_postfix({
             "Moves": move_count,
             "Winner": f"P{winner}",
-            "Buffer": len(replay_buffer)
+            "Buffer": len(replay_buffer),
+            "LR": f"{scheduler.get_last_lr()[0]:.1e}"
         })
 
         # Train model on sampled mini-batches from Replay Buffer using BPTT
@@ -202,6 +225,8 @@ def train_self_play(args):
             chk_path = os.path.join(checkpoint_dir, f"model_checkpoint_{game_idx + 1}.pth")
             torch.save(model.state_dict(), chk_path)
             tqdm.write(f"  💾 Saved checkpoint: {chk_path}")
+            
+        scheduler.step()
 
     # Save final model weights
     save_path = os.path.join(output_dir, "model_weights.pth")
@@ -223,6 +248,7 @@ def parse_args():
     parser.add_argument("--epochs", type=int, default=5, help="Epochs per game batch (default: 5)")
     parser.add_argument("--checkpoint-interval", type=int, default=10, help="Game interval for checkpoints (default: 10)")
     parser.add_argument("--output-dir", type=str, default="backend", help="Directory to save weights & checkpoints (default: backend)")
+    parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned checkpoints and weights")
     return parser.parse_args()
 
 if __name__ == "__main__":
