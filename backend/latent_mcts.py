@@ -5,13 +5,14 @@ import torch
 import torch.nn as nn
 
 class Node:
-    def __init__(self, prior: float = 0.0, reward: float = 0.0, hidden_state: torch.Tensor = None):
+    def __init__(self, prior: float = 0.0, reward: float = 0.0, hidden_state: torch.Tensor = None, legal_actions: list = None):
         self.visit_count = 0
         self.value_sum = 0.0
         self.prior = prior
         self.reward = reward
         self.hidden_state = hidden_state
         self.children = {}  # dict mapping action (int) -> Node
+        self.legal_actions = legal_actions
 
     def value(self) -> float:
         if self.visit_count == 0:
@@ -61,10 +62,10 @@ class LatentMCTS:
             total_p_sum += p_val
 
         # Create Root Node
-        root = Node(prior=1.0, reward=0.0, hidden_state=init_latent_state)
+        root = Node(prior=1.0, reward=0.0, hidden_state=init_latent_state, legal_actions=legal_actions)
 
-        for act in legal_actions:
-            norm_prior = (legal_priors[act] / total_p_sum) if total_p_sum > 0 else (1.0 / len(legal_actions))
+        for act in root.legal_actions:
+            norm_prior = (legal_priors[act] / total_p_sum) if total_p_sum > 0 else (1.0 / len(root.legal_actions))
             root.children[act] = Node(prior=norm_prior, reward=0.0, hidden_state=None)
 
         # Apply Dirichlet noise to root priors if requested (exploration enhancement)
@@ -125,9 +126,10 @@ class LatentMCTS:
                 node.hidden_state = next_latent
                 node.reward = rec_rw.item()
                 leaf_value = rec_val.item()
+                node.legal_actions = [a for a in parent_node.legal_actions if a != chosen_act]
 
                 # Expand children for legal actions
-                for act in legal_actions:
+                for act in node.legal_actions:
                     p_val = rec_priors[act].item() if act < len(rec_priors) else 0.0
                     node.children[act] = Node(prior=p_val, reward=0.0, hidden_state=None)
             else:
@@ -138,9 +140,10 @@ class LatentMCTS:
             value = leaf_value
             for parent, act in reversed(path):
                 child_node = parent.children[act]
+                # The value of this state is the transition reward minus the opponent's value
+                value = child_node.reward - value 
                 child_node.visit_count += 1
                 child_node.value_sum += value
-                value = -value  # Invert value for alternating player perspective
 
             root.visit_count += 1
 
