@@ -156,6 +156,37 @@ where $P(s, a)$ is supplied by the prediction head $f_\theta$. Because search oc
 \end{algorithmic}
 \end{algorithm}
 
+\section{Neural Optimization and Empirical Benchmarking}
+
+\subsection{Backpropagation Through Time (BPTT) and Dynamics Optimization}
+Training the MuZero dynamics model $g_\theta$ requires unrolling network predictions across sequence steps using Backpropagation Through Time (BPTT). Given a trajectory of observations $o_t$, target policies $\pi_t$, and terminal values $z_t$, the loss function $\mathcal{L}(\theta)$ is evaluated across $K=5$ unrolled steps:
+\begin{equation}
+    \mathcal{L}(\theta) = \sum_{k=0}^{K} \left( l_p(\mathbf{p}_{t+k}, \hat{\mathbf{p}}_{t+k}) + l_v(v_{t+k}, \hat{v}_{t+k}) \right)
+\end{equation}
+where $l_p$ represents cross-entropy policy loss and $l_v$ denotes mean squared error value loss. To prevent gradient explosion through deep unrolled hidden states, gradient scaling hooks are attached to the latent tensor:
+\begin{equation}
+    \nabla_{s_k} \mathcal{L} \gets 0.5 \times \nabla_{s_k} \mathcal{L}
+\end{equation}
+Furthermore, loss evaluation masks out padded terminal steps to prevent target distortion.
+
+\subsection{Statistical Hypothesis Verification via SPRT}
+To rigorously confirm that the trained Latent MCTS agent performs significantly better than random chance, we employ Wald's Sequential Probability Ratio Test (SPRT). Pitting MuZero against a 1-simulation Classic MCTS opponent (a uniform random player), we compute the running log-likelihood ratio (LLR):
+\begin{equation}
+    \text{LLR}_m = \sum_{i=1}^{m} \ln \frac{P(y_i \mid H_1)}{P(y_i \mid H_0)}
+\end{equation}
+where $H_0: p \le 0.50$ and $H_1: p \ge 0.55$. The test terminates as soon as LLR crosses upper bound $A$ or lower bound $B$:
+\begin{equation}
+    A = \ln \left( \frac{1 - \beta}{\alpha} \right), \quad B = \ln \left( \frac{\beta}{1 - \alpha} \right)
+\end{equation}
+Setting Type I error $\alpha = 0.05$ and Type II error $\beta = 0.05$ yields bounds $A \approx 2.944$ and $B \approx -2.944$, providing optimal decision efficiency.
+
+\subsection{Classic Simulation Equivalent (CSE) Estimation via Logistic Regression}
+To quantify neural compute efficiency without the instability of standard binary search, we estimate the Classic Simulation Equivalent (CSE) using 4-parameter logistic regression. We measure MuZero's win rate against Classic MCTS across a logarithmic grid of anchor simulation counts $X \in \{1, 5, 10, 25, 50, 100, 200, 400\}$. We fit a Sigmoid model:
+\begin{equation}
+    P(\text{win}) = \frac{1}{1 + e^{-k(\ln(X) - \ln(\text{CSE}))}}
+\end{equation}
+where $k$ governs the win-rate slope and $\text{CSE}$ represents the exact simulation count at parity ($P(\text{win}) = 0.50$). Global non-linear regression across all anchor points averages out single-match noise, producing a robust, highly reproducible evaluation metric.
+
 \section{Broader Applications of MCTS}
 Because MCTS is a generic decision-making framework capable of navigating arbitrary combinatorial spaces, its applications extend far beyond zero-sum games:
 \begin{itemize}
