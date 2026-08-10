@@ -28,7 +28,7 @@ def render_board_lines(env, board_size, extra_info):
     lines.append("───────────────────────────────────────────")
     lines.append(" LIVE BOARD STATE:")
     
-    symbols = {0: ".", 1: "R", 2: "B"}
+    symbols = {0: ".", 1: "\033[91mR\033[0m", 2: "\033[94mB\033[0m"}
     
     header = "    " + " ".join(str(c) for c in range(board_size))
     lines.append(header)
