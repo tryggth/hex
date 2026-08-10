@@ -35,7 +35,7 @@ def render_board_lines(env, board_size, extra_info):
     
     for r in range(board_size):
         indent = " " * (r + 1)
-        row_str = " ".join(symbols[env.board[r, c]] for c in range(board_size))
+        row_str = " ".join(symbols[env.board[r * board_size + c]] for c in range(board_size))
         lines.append(f" {r:1d}{indent}{row_str}")
         
     return lines
