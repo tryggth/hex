@@ -1,0 +1,41 @@
+name: Sync Wiki to GitHub
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'wiki/**'
+      - '.github/workflows/deploy-wiki.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-wiki:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Push Wiki to GitHub Wiki Repo
+        env:
+          ACTION_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          
+          # Clone or initialize wiki repository
+          WIKI_DIR=$(mktemp -d)
+          if git clone "https://x-access-token:${ACTION_TOKEN}@github.com/tryggth/hex.wiki.git" "$WIKI_DIR"; then
+            echo "Wiki repo exists, updating..."
+            rsync -av --delete --exclude='.git' wiki/ "$WIKI_DIR/"
+            cd "$WIKI_DIR"
+            git add .
+            if ! git diff --staged --quiet; then
+              git commit -m "docs: sync wiki pages from main repo"
+              git push origin master || git push origin main
+            fi
+          else
+            echo "Wiki repository not initialized on GitHub yet. Please create the initial Home page via GitHub Web UI."
+          fi
