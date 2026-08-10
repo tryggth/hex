@@ -28,14 +28,26 @@ def render_board_lines(env, board_size, extra_info):
     lines.append("───────────────────────────────────────────")
     lines.append(" LIVE BOARD STATE:")
     
-    symbols = {0: ".", 1: "\033[91mR\033[0m", 2: "\033[94mB\033[0m"}
-    
     header = "    " + " ".join(str(c) for c in range(board_size))
     lines.append(header)
     
     for r in range(board_size):
         indent = " " * (r + 1)
-        row_str = " ".join(symbols[env.board[r * board_size + c]] for c in range(board_size))
+        row_symbols = []
+        for c in range(board_size):
+            val = env.board[r * board_size + c]
+            if val == 1:
+                row_symbols.append("\033[91mR\033[0m")
+            elif val == 2:
+                row_symbols.append("\033[94mB\033[0m")
+            elif r == 0 or r == board_size - 1:
+                row_symbols.append("\033[91m.\033[0m")  # Red top/bottom boundary
+            elif c == 0 or c == board_size - 1:
+                row_symbols.append("\033[94m.\033[0m")  # Blue left/right boundary
+            else:
+                row_symbols.append(".")
+                
+        row_str = " ".join(row_symbols)
         lines.append(f" {r:1d}{indent}{row_str}")
         
     return lines
