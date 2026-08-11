@@ -110,6 +110,9 @@ def train_self_play(args):
 
     print("--- Starting Self-Play & Neural Optimization Loop ---")
     pbar = tqdm(range(args.num_games), desc="MuZero Training Loop", unit="game")
+    
+    latest_p_loss = 0.0
+    latest_v_loss = 0.0
 
     for game_idx in pbar:
         obs = env.reset()
@@ -191,11 +194,7 @@ def train_self_play(args):
         replay_buffer.push(game_history)
         replay_buffer.push(game_history_sym)
 
-        pbar.set_postfix({
-            "Moves": move_count,
-            "Winner": f"P{winner}",
-            "Buffer": len(replay_buffer)
-        })
+        # Progress bar will be updated at the end of the game loop
 
         # Train model on sampled mini-batches from Replay Buffer using BPTT
         if len(replay_buffer) >= max(1, args.batch_size // 40):
@@ -207,6 +206,10 @@ def train_self_play(args):
                 # Initial step loss
                 p_loss = -torch.mean(torch.sum(b_policies[:, 0] * torch.log_softmax(policy_logits, dim=-1), dim=-1))
                 v_loss = torch.mean((val_pred.squeeze(-1) - b_values[:, 0]) ** 2)
+                
+                latest_p_loss = p_loss.item()
+                latest_v_loss = v_loss.item()
+                
                 total_loss = p_loss + v_loss
 
                 # Unrolled steps loss for Dynamics Network (g_theta)
@@ -227,6 +230,13 @@ def train_self_play(args):
                 optimizer.zero_grad()
                 total_loss.backward()
                 optimizer.step()
+
+        pbar.set_postfix({
+            "Moves": move_count,
+            "Buffer": len(replay_buffer),
+            "PLoss": f"{latest_p_loss:.3f}",
+            "VLoss": f"{latest_v_loss:.3f}"
+        })
 
         # Save checkpoint every checkpoint_interval games
         if (game_idx + 1) % args.checkpoint_interval == 0:
