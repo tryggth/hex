@@ -217,7 +217,7 @@ async def main():
     parser.add_argument("--board-size", type=int, default=7)
     parser.add_argument("--muzero-sims", type=int, default=400)
     parser.add_argument("--pairs-per-anchor", type=int, default=10, help="20 games per anchor (10 pairs)")
-    parser.add_argument("--anchors", type=int, nargs="+", default=[1, 5, 10, 25, 50, 100, 200, 400])
+    parser.add_argument("--anchors", type=int, nargs="+", default=None)
     parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned weights")
     args = parser.parse_args()
 
@@ -260,7 +260,13 @@ async def main():
     win_rates = []
     fit_params = None
 
-    anchors = sorted(args.anchors)
+    if args.anchors is not None:
+        anchors = sorted(args.anchors)
+    else:
+        if args.board_size == 5:
+            anchors = [1, 5, 10, 25, 50, 100, 200]
+        else:
+            anchors = [1, 5, 10, 25, 50, 100, 200, 400]
     for idx, anchor in enumerate(anchors):
         win_rate = await play_match_interactive(
             board_size=args.board_size,

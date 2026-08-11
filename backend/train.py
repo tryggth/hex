@@ -86,8 +86,18 @@ def train_self_play(args):
         latent_channels=args.latent_channels,
         num_res_blocks=args.num_blocks
     )
+    if args.load_weights:
+        model.load_state_dict(torch.load(args.load_weights, map_location="cpu"), strict=False)
+        print(f"  Loaded weights from {args.load_weights}")
+
+    if args.freeze_conv:
+        for param in model.representation.parameters():
+            param.requires_grad = False
+        for param in model.dynamics.parameters():
+            param.requires_grad = False
+        print("  Frozen representation and dynamics layers.")
+
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.num_games)
     replay_buffer = ExperienceReplayBuffer(capacity=args.buffer_capacity)
 
     # Setup directories
@@ -155,15 +165,14 @@ def train_self_play(args):
             })
 
             # Symmetry: 180-degree rotation
-            obs_sym = np.flip(obs, axis=(1, 2)).copy()
-            policy_2d = target_policy.reshape((args.board_size, args.board_size))
-            target_policy_sym = np.flip(policy_2d, axis=(0, 1)).flatten().copy()
-            chosen_action_sym = (args.board_size * args.board_size - 1) - chosen_action
+            rot_obs = np.rot90(obs, k=2, axes=(1, 2)).copy()
+            rot_action = (args.board_size * args.board_size - 1) - chosen_action
+            rot_policy = target_policy[::-1].copy()
 
             game_history_sym.append({
-                "obs": obs_sym,
-                "action": int(chosen_action_sym),
-                "target_policy": target_policy_sym,
+                "obs": rot_obs,
+                "action": int(rot_action),
+                "target_policy": rot_policy,
                 "player": player_at_step
             })
 
@@ -185,8 +194,7 @@ def train_self_play(args):
         pbar.set_postfix({
             "Moves": move_count,
             "Winner": f"P{winner}",
-            "Buffer": len(replay_buffer),
-            "LR": f"{scheduler.get_last_lr()[0]:.1e}"
+            "Buffer": len(replay_buffer)
         })
 
         # Train model on sampled mini-batches from Replay Buffer using BPTT
@@ -225,8 +233,6 @@ def train_self_play(args):
             chk_path = os.path.join(checkpoint_dir, f"model_checkpoint_{game_idx + 1}.pth")
             torch.save(model.state_dict(), chk_path)
             tqdm.write(f"  💾 Saved checkpoint: {chk_path}")
-            
-        scheduler.step()
 
     # Save final model weights
     save_path = os.path.join(output_dir, "model_weights.pth")
@@ -245,10 +251,12 @@ def parse_args():
     parser.add_argument("--batch-size", type=int, default=64, help="Replay buffer mini-batch size (default: 64)")
     parser.add_argument("--buffer-capacity", type=int, default=10000, help="Replay buffer capacity (default: 10000)")
     parser.add_argument("--temp-moves", type=int, default=6, help="Temperature sampling moves at start (default: 6)")
-    parser.add_argument("--epochs", type=int, default=5, help="Epochs per game batch (default: 5)")
+    parser.add_argument("--epochs", type=int, default=1, help="Epochs per game batch (default: 1)")
     parser.add_argument("--checkpoint-interval", type=int, default=10, help="Game interval for checkpoints (default: 10)")
     parser.add_argument("--output-dir", type=str, default="backend", help="Directory to save weights & checkpoints (default: backend)")
     parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned checkpoints and weights")
+    parser.add_argument("--load-weights", type=str, default=None, help="Path to weights to load before training")
+    parser.add_argument("--freeze-conv", action="store_true", help="Freeze representation and dynamics layers")
     return parser.parse_args()
 
 if __name__ == "__main__":
