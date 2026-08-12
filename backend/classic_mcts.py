@@ -1,5 +1,6 @@
 import math
 import random
+import numpy as np
 
 class Node:
     def __init__(self, state, parent=None, action_taken=None):
@@ -21,7 +22,7 @@ class ClassicMCTS:
     def __init__(self, c_puct=1.414):
         self.c_puct = c_puct
 
-    def search(self, env_state, num_simulations):
+    def search(self, env_state, num_simulations, temperature=0.0):
         root = Node(env_state.clone())
 
         for _ in range(num_simulations):
@@ -85,11 +86,31 @@ class ClassicMCTS:
                 curr_reward = -curr_reward
                 curr = curr.parent
 
-        best_action = None
-        most_visits = -1
-        for act, child in root.children.items():
-            if child.visit_count > most_visits:
-                most_visits = child.visit_count
-                best_action = act
+        target_policy = np.zeros(env_state.num_cells, dtype=np.float32)
+        total_visits = sum(child.visit_count for child in root.children.values())
+        
+        if total_visits > 0:
+            for act, child in root.children.items():
+                target_policy[act] = child.visit_count / total_visits
+        else:
+            legal = env_state.legal_actions()
+            for act in legal:
+                target_policy[act] = 1.0 / len(legal)
+
+        actions = list(root.children.keys())
+        visits = np.array([root.children[a].visit_count for a in actions], dtype=np.float64)
+
+        if np.sum(visits) > 0:
+            if temperature > 0.0:
+                visits_norm = visits / np.max(visits)
+                visits_pow = visits_norm ** (1.0 / temperature)
+                probs = visits_pow / np.sum(visits_pow)
+                probs = probs / np.sum(probs)
+                best_action = np.random.choice(actions, p=probs)
+            else:
+                best_action = max(actions, key=lambda a: root.children[a].visit_count)
+        else:
+            legal = env_state.legal_actions()
+            best_action = random.choice(legal) if legal else None
                 
-        return best_action, root
+        return best_action, target_policy
