@@ -146,17 +146,21 @@ def train_self_play(args):
                 for act in legal:
                     target_policy[act] = 1.0 / len(legal)
 
-            # Temperature Sampling:
-            # First `temp_moves` moves: sample action probabilistically tau = 1.0
-            # After `temp_moves`: greedy action selection argmax(N)
+            # Move-Based Temperature Decay:
+            # Moves 1-4 (move_count < 4): tau = 1.0 (exploration)
+            # Move 5+ (move_count >= 4): tau = 0.1 (sharp/deterministic)
+            tau = 1.0 if move_count < 4 else 0.1
             actions = list(root.children.keys())
-            visits = [root.children[a].visit_count for a in actions]
+            visits = np.array([root.children[a].visit_count for a in actions], dtype=np.float64)
 
-            if move_count < args.temp_moves and sum(visits) > 0:
-                probs = [v / sum(visits) for v in visits]
+            if np.sum(visits) > 0:
+                visits_norm = visits / np.max(visits)
+                visits_pow = visits_norm ** (1.0 / tau)
+                probs = visits_pow / np.sum(visits_pow)
+                probs = probs / np.sum(probs)
                 chosen_action = np.random.choice(actions, p=probs)
             else:
-                chosen_action = max(actions, key=lambda a: root.children[a].visit_count)
+                chosen_action = np.random.choice(legal)
 
             # Record step
             player_at_step = env.current_player
