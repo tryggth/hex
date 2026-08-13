@@ -111,8 +111,12 @@ class HexEnv:
 
         return self.get_observation(), reward, done
 
-    def get_observation(self) -> np.ndarray:
-        obs = np.zeros((3, self.board_size, self.board_size), dtype=np.float32)
+    def get_observation(self, v5_features=False) -> np.ndarray:
+        if v5_features:
+            obs = np.zeros((5, self.board_size, self.board_size), dtype=np.float32)
+        else:
+            obs = np.zeros((3, self.board_size, self.board_size), dtype=np.float32)
+            
         grid = self.board.reshape((self.board_size, self.board_size))
 
         # Channel 0: Player 1 (Red) stones
@@ -121,6 +125,14 @@ class HexEnv:
         obs[1] = (grid == 2).astype(np.float32)
         # Channel 2: Current player turn (1.0 for P1, 0.0 for P2)
         obs[2] = 1.0 if self.current_player == 1 else 0.0
+        
+        if v5_features:
+            # Channel 3: P1 Boundary (Row 0 and Row N-1 set to 1.0)
+            obs[3, 0, :] = 1.0
+            obs[3, self.board_size - 1, :] = 1.0
+            # Channel 4: P2 Boundary (Col 0 and Col N-1 set to 1.0)
+            obs[4, :, 0] = 1.0
+            obs[4, :, self.board_size - 1] = 1.0
 
         return obs
 

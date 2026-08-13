@@ -97,51 +97,72 @@ class DynamicsNetwork(nn.Module):
         return next_latent_state, reward
 
 class PredictionNetwork(nn.Module):
-    def __init__(self, board_size: int = 5, latent_channels: int = 32, action_space_size: int = 25):
+    def __init__(self, board_size: int = 5, latent_channels: int = 32, action_space_size: int = 25, use_fcn: bool = False):
         super().__init__()
         self.board_size = board_size
         self.action_space_size = action_space_size or (board_size * board_size)
+        self.use_fcn = use_fcn
 
-        # Policy Head
-        self.policy_conv = nn.Conv2d(latent_channels, 2, kernel_size=1, bias=False)
-        self.policy_bn = nn.BatchNorm2d(2)
-        self.policy_relu = nn.ReLU(inplace=True)
-        self.policy_fc = nn.Linear(2 * board_size * board_size, self.action_space_size)
-
-        # Value Head
-        self.value_conv = nn.Conv2d(latent_channels, 1, kernel_size=1, bias=False)
-        self.value_bn = nn.BatchNorm2d(1)
-        self.value_relu = nn.ReLU(inplace=True)
-        self.value_fc1 = nn.Linear(board_size * board_size, 32)
-        self.value_fc2 = nn.Linear(32, 1)
+        if self.use_fcn:
+            self.policy_conv = nn.Conv2d(latent_channels, 1, kernel_size=1)
+            self.value_conv = nn.Conv2d(latent_channels, 1, kernel_size=1)
+            self.value_relu = nn.ReLU(inplace=True)
+            self.value_pool = nn.AdaptiveAvgPool2d((1, 1))
+        else:
+            # Policy Head
+            self.policy_conv = nn.Conv2d(latent_channels, 2, kernel_size=1, bias=False)
+            self.policy_bn = nn.BatchNorm2d(2)
+            self.policy_relu = nn.ReLU(inplace=True)
+            self.policy_fc = nn.Linear(2 * board_size * board_size, self.action_space_size)
+    
+            # Value Head
+            self.value_conv = nn.Conv2d(latent_channels, 1, kernel_size=1, bias=False)
+            self.value_bn = nn.BatchNorm2d(1)
+            self.value_relu = nn.ReLU(inplace=True)
+            self.value_fc1 = nn.Linear(board_size * board_size, 32)
+            self.value_fc2 = nn.Linear(32, 1)
 
     def forward(self, latent_state: torch.Tensor):
-        # Policy logits
-        p = self.policy_conv(latent_state)
-        p = self.policy_bn(p)
-        p = self.policy_relu(p)
-        p = torch.flatten(p, start_dim=1)
-        policy_logits = self.policy_fc(p)
-
-        # Value [-1, 1]
-        v = self.value_conv(latent_state)
-        v = self.value_bn(v)
-        v = self.value_relu(v)
-        v = torch.flatten(v, start_dim=1)
-        v = self.policy_relu(self.value_fc1(v))
-        value = torch.tanh(self.value_fc2(v))
+        if self.use_fcn:
+            # Policy logits
+            p = self.policy_conv(latent_state)
+            policy_logits = torch.flatten(p, start_dim=1)
+            
+            # Value [-1, 1]
+            v = self.value_conv(latent_state)
+            v = self.value_relu(v)
+            v = self.value_pool(v)
+            v = torch.flatten(v, start_dim=1)
+            value = torch.tanh(v)
+        else:
+            # Policy logits
+            p = self.policy_conv(latent_state)
+            p = self.policy_bn(p)
+            p = self.policy_relu(p)
+            p = torch.flatten(p, start_dim=1)
+            policy_logits = self.policy_fc(p)
+    
+            # Value [-1, 1]
+            v = self.value_conv(latent_state)
+            v = self.value_bn(v)
+            v = self.value_relu(v)
+            v = torch.flatten(v, start_dim=1)
+            v = self.policy_relu(self.value_fc1(v))
+            value = torch.tanh(self.value_fc2(v))
 
         return policy_logits, value
 
+
 class MuZeroModels(nn.Module):
-    def __init__(self, board_size: int = 5, action_space_size: int = 25, latent_channels: int = 32, num_res_blocks: int = 2):
+    def __init__(self, board_size: int = 5, action_space_size: int = 25, latent_channels: int = 32, num_res_blocks: int = 2, input_channels: int = 3, use_fcn: bool = False):
         super().__init__()
         self.board_size = board_size
         self.action_space_size = action_space_size or (board_size * board_size)
+        self.use_fcn = use_fcn
 
         self.representation = RepresentationNetwork(
             board_size=board_size,
-            num_channels=3,
+            num_channels=input_channels,
             latent_channels=latent_channels,
             num_res_blocks=num_res_blocks
         )
@@ -154,7 +175,8 @@ class MuZeroModels(nn.Module):
         self.prediction = PredictionNetwork(
             board_size=board_size,
             latent_channels=latent_channels,
-            action_space_size=self.action_space_size
+            action_space_size=self.action_space_size,
+            use_fcn=use_fcn
         )
 
     def initial_inference(self, observation: torch.Tensor):

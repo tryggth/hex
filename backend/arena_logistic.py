@@ -64,14 +64,19 @@ def update_dashboard(sims_data, win_rates, current_env, board_size, extra_info, 
         plotext.plot([min(sims_data), max(sims_data)], [0.5, 0.5], color="red", label="Parity")
         
         if fit_params is not None:
-            k, x0 = fit_params
+            popt, pcov = fit_params
+            k, x0 = popt
             cse = np.exp(x0)
             x_line = np.linspace(min(x_data) - 0.5, max(x_data) + 0.5, 100)
             y_line = sigmoid(x_line, k, x0)
             sims_line = np.exp(x_line)
             plotext.plot(sims_line.tolist(), y_line.tolist(), color="green", label="Fit")
             plotext.scatter([cse], [0.5], color="yellow", marker="x", label="CSE")
-            plotext.title(f"Logistic CSE (Current CSE: {cse:.1f})")
+            
+            se = np.sqrt(pcov[1, 1])
+            lower_bound = np.exp(x0 - 1.96 * se)
+            upper_bound = np.exp(x0 + 1.96 * se)
+            plotext.title(f"Logistic CSE (Current CSE: {cse:.1f} | 95% CI: [{lower_bound:.1f}, {upper_bound:.1f}])")
         else:
             plotext.title("Logistic CSE Evaluation")
         plotext.xscale("log")
@@ -318,8 +323,8 @@ async def main():
             try:
                 x_data = np.log(sims_data)
                 y_data = np.array(win_rates)
-                popt, _ = curve_fit(sigmoid, x_data, y_data, p0=[-1.0, np.mean(x_data)])
-                fit_params = popt
+                popt, pcov = curve_fit(sigmoid, x_data, y_data, p0=[-1.0, np.mean(x_data)])
+                fit_params = (popt, pcov)
             except Exception:
                 fit_params = None
 
@@ -336,8 +341,12 @@ async def main():
     print(f"⚖️ Wall-Clock Crossover (N_time): {crossover:.1f} classic sims")
     
     if fit_params is not None:
-        cse = np.exp(fit_params[1])
-        print(f"\n📊 SIMULATION CSE (N_50): {cse:.1f}")
+        popt, pcov = fit_params
+        cse = np.exp(popt[1])
+        se = np.sqrt(pcov[1, 1])
+        lower_bound = np.exp(popt[1] - 1.96 * se)
+        upper_bound = np.exp(popt[1] + 1.96 * se)
+        print(f"\n📊 SIMULATION CSE (N_50): {cse:.1f} (95% CI: [{lower_bound:.1f}, {upper_bound:.1f}])")
         
         speedup = (cse * t_classic_sim) / max(1e-9, t_muzero)
         print(f"🚀 WALL-CLOCK SPEEDUP FACTOR: {speedup:.2f}x")
