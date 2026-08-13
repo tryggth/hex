@@ -147,12 +147,21 @@ def main():
     
     all_trajectories = []
     if args.workers == 1:
+        # Single worker: generate one game at a time with per-game progress
+        pbar = tqdm(total=args.num_games, desc="Generating games", unit="game")
         for w_args in worker_args:
-            all_trajectories.extend(generate_games_worker(w_args))
+            results = generate_games_worker(w_args)
+            all_trajectories.extend(results)
+            pbar.update(w_args[1])
+        pbar.close()
     else:
         with multiprocessing.Pool(args.workers) as pool:
-            for result in tqdm(pool.imap_unordered(generate_games_worker, worker_args), total=args.workers):
+            pbar = tqdm(total=args.num_games, desc="Generating games", unit="game")
+            for result in pool.imap_unordered(generate_games_worker, worker_args):
+                games_done = len(result) // 2  # each game produces 2 trajectories (original + augmented)
                 all_trajectories.extend(result)
+                pbar.update(games_done)
+            pbar.close()
             
     os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
     with open(args.output, "wb") as f:
