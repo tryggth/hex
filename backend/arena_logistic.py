@@ -2,6 +2,7 @@ import argparse
 import asyncio
 import os
 import math
+import time
 import numpy as np
 import torch
 import plotext
@@ -112,6 +113,11 @@ async def play_match_interactive(
     total_games = pairs_per_match * 2
     stop_event = asyncio.Event()
     game_count = 0
+    
+    muzero_time_total = 0.0
+    muzero_moves = 0
+    classic_time_total = 0.0
+    classic_moves = 0
 
     for pair_idx in range(pairs_per_match):
         # --- Game A: MuZero = Red (1), Classic = Blue (2) ---
@@ -139,6 +145,7 @@ async def play_match_interactive(
             if env_a.current_player == 1:
                 obs = env_a.get_observation()
                 obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                t0 = time.time()
                 root = await latent_mcts_a.search(
                     initial_state_tensor=obs_tensor,
                     legal_actions=legal,
@@ -146,9 +153,16 @@ async def play_match_interactive(
                     stop_event=stop_event
                 )
                 best_act = max(root.children.items(), key=lambda x: x[1].visit_count)[0]
+                t1 = time.time()
+                muzero_time_total += (t1 - t0)
+                muzero_moves += 1
                 env_a.step(best_act)
             else:
+                t0 = time.time()
                 best_act, _ = classic_mcts_a.search(env_a, num_simulations=classic_sims)
+                t1 = time.time()
+                classic_time_total += (t1 - t0)
+                classic_moves += 1
                 env_a.step(best_act)
 
         if env_a.winner == 1:
@@ -185,11 +199,16 @@ async def play_match_interactive(
             update_dashboard(sims_data, win_rates, env_b, board_size, info, fit_params)
 
             if env_b.current_player == 1:
+                t0 = time.time()
                 best_act, _ = classic_mcts_b.search(env_b, num_simulations=classic_sims)
+                t1 = time.time()
+                classic_time_total += (t1 - t0)
+                classic_moves += 1
                 env_b.step(best_act)
             else:
                 obs = env_b.get_observation()
                 obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+                t0 = time.time()
                 root = await latent_mcts_b.search(
                     initial_state_tensor=obs_tensor,
                     legal_actions=legal,
@@ -197,6 +216,9 @@ async def play_match_interactive(
                     stop_event=stop_event
                 )
                 best_act = max(root.children.items(), key=lambda x: x[1].visit_count)[0]
+                t1 = time.time()
+                muzero_time_total += (t1 - t0)
+                muzero_moves += 1
                 env_b.step(best_act)
 
         if env_b.winner == 2:
@@ -210,15 +232,16 @@ async def play_match_interactive(
         }
         update_dashboard(sims_data, win_rates, env_b, board_size, info, fit_params)
 
-    return muzero_wins / total_games
+    win_rate = muzero_wins / total_games
+    return win_rate, muzero_time_total, muzero_moves, classic_time_total, classic_moves
 
 async def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", type=str, default="v4_clone", help="Run ID for versioned weights")
     parser.add_argument("--board-size", type=int, default=7)
     parser.add_argument("--muzero-sims", type=int, default=400)
-    parser.add_argument("--pairs-per-anchor", type=int, default=10, help="20 games per anchor (10 pairs)")
-    parser.add_argument("--anchors", type=int, nargs="+", default=None)
-    parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned weights")
+    parser.add_argument("--classic-anchors", type=str, default="250,500,1000,2500,5000,10000")
+    parser.add_argument("--games-per-anchor", type=int, default=10)
     args = parser.parse_args()
 
     board_size = args.board_size
@@ -259,20 +282,21 @@ async def main():
     sims_data = []
     win_rates = []
     fit_params = None
+    
+    total_muzero_time = 0.0
+    total_muzero_moves = 0
+    total_classic_time = 0.0
+    total_classic_sims_completed = 0
 
-    if args.anchors is not None:
-        anchors = sorted(args.anchors)
-    else:
-        if args.board_size == 5:
-            anchors = [1, 5, 10, 25, 50, 100, 200]
-        else:
-            anchors = [1, 5, 10, 25, 50, 100, 200, 400]
+    anchors = [int(x) for x in args.classic_anchors.split(',')]
+    pairs_per_anchor = max(1, args.games_per_anchor // 2)
+
     for idx, anchor in enumerate(anchors):
-        win_rate = await play_match_interactive(
+        win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
             board_size=args.board_size,
             muzero_sims=args.muzero_sims,
             classic_sims=anchor,
-            pairs_per_match=args.pairs_per_anchor,
+            pairs_per_match=pairs_per_anchor,
             model=model,
             anchor_idx=idx,
             total_anchors=len(anchors),
@@ -283,6 +307,11 @@ async def main():
         
         sims_data.append(anchor)
         win_rates.append(win_rate)
+        
+        total_muzero_time += muz_t
+        total_muzero_moves += muz_m
+        total_classic_time += clas_t
+        total_classic_sims_completed += (clas_m * anchor)
 
         # Update fit if we have enough points
         if len(sims_data) >= 2:
@@ -295,11 +324,35 @@ async def main():
                 fit_params = None
 
     # Final summary display
+    print(f"\n====================================")
+    
+    # Timing Stats
+    t_muzero = total_muzero_time / max(1, total_muzero_moves)
+    t_classic_sim = total_classic_time / max(1, total_classic_sims_completed)
+    crossover = t_muzero / max(1e-9, t_classic_sim)
+    
+    print(f"⏱️ MuZero ({args.muzero_sims} sims): {t_muzero:.4f} sec/move")
+    print(f"⏱️ Classic MCTS: {t_classic_sim*1000:.4f} ms/simulation")
+    print(f"⚖️ Wall-Clock Crossover (N_time): {crossover:.1f} classic sims")
+    
     if fit_params is not None:
         cse = np.exp(fit_params[1])
-        print(f"\n====================================")
-        print(f"📊 FINAL CALCULATED CSE: {cse:.1f}")
-        print(f"====================================\n")
+        print(f"\n📊 SIMULATION CSE (N_50): {cse:.1f}")
+        
+        speedup = (cse * t_classic_sim) / max(1e-9, t_muzero)
+        print(f"🚀 WALL-CLOCK SPEEDUP FACTOR: {speedup:.2f}x")
+    else:
+        # Check if saturated
+        if np.mean(win_rates) < 0.1:
+            print(f"\n⚠️ WARNING: The model win rate remained near 0% across all anchors.")
+            print(f"It saturated the search ceiling. Could not fit logistic curve.")
+        elif np.mean(win_rates) > 0.9:
+            print(f"\n⚠️ WARNING: The model win rate remained near 100% across all anchors.")
+            print(f"It completely dominates the classic anchor space. Could not fit logistic curve.")
+        else:
+            print(f"\n⚠️ Could not fit a reliable logistic curve.")
+
+    print(f"====================================\n")
 
 if __name__ == "__main__":
     asyncio.run(main())
