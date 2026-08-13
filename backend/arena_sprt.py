@@ -9,7 +9,7 @@ from backend.muzero_nets import MuZeroModels
 from backend.latent_mcts import LatentMCTS
 from backend.classic_mcts import ClassicMCTS
 
-async def play_single_game(board_size, muzero_sims, classic_sims, model, muzero_color):
+async def play_single_game(board_size, muzero_sims, classic_sims, model, muzero_color, input_channels=3):
     env = HexEnv(board_size=board_size)
     latent_mcts = LatentMCTS(model=model)
     classic_mcts = ClassicMCTS()
@@ -20,7 +20,7 @@ async def play_single_game(board_size, muzero_sims, classic_sims, model, muzero_
         if not legal:
             break
         if env.current_player == muzero_color:
-            obs = env.get_observation()
+            obs = env.get_observation(v5_features=(input_channels == 5))
             obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
             root = await latent_mcts.search(
                 initial_state_tensor=obs_tensor,
@@ -41,6 +41,8 @@ async def main():
     parser.add_argument("--board-size", type=int, default=7)
     parser.add_argument("--muzero-sims", type=int, default=400)
     parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned weights")
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
     args = parser.parse_args()
 
     board_size = args.board_size
@@ -65,7 +67,9 @@ async def main():
             board_size=board_size,
             action_space_size=action_space_size,
             latent_channels=latent_channels,
-            num_res_blocks=num_res_blocks
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
         )
         model.load_state_dict(saved_weights)
     else:
@@ -73,7 +77,9 @@ async def main():
             board_size=board_size,
             action_space_size=action_space_size,
             latent_channels=latent_channels,
-            num_res_blocks=num_res_blocks
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
         )
     model.eval()
 
@@ -112,7 +118,8 @@ async def main():
                 muzero_sims=args.muzero_sims,
                 classic_sims=1,
                 model=model,
-                muzero_color=muzero_color
+                muzero_color=muzero_color,
+                input_channels=args.input_channels
             )
             
             muzero_wins += win

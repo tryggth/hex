@@ -70,6 +70,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--run-id", type=str, default="v4_clone")
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
     args = parser.parse_args()
 
     print(f"Loading dataset from {args.dataset}...")
@@ -86,7 +88,9 @@ def main():
         board_size=args.board_size,
         action_space_size=args.board_size ** 2,
         latent_channels=args.latent_channels,
-        num_res_blocks=args.num_blocks
+        num_res_blocks=args.num_blocks,
+        input_channels=args.input_channels,
+        use_fcn=args.use_fcn
     )
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 

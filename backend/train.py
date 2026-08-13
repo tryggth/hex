@@ -84,7 +84,9 @@ def train_self_play(args):
         board_size=args.board_size,
         action_space_size=action_space_size,
         latent_channels=args.latent_channels,
-        num_res_blocks=args.num_blocks
+        num_res_blocks=args.num_blocks,
+        input_channels=args.input_channels,
+        use_fcn=args.use_fcn
     )
     if args.load_weights:
         model.load_state_dict(torch.load(args.load_weights, map_location="cpu"), strict=False)
@@ -115,7 +117,8 @@ def train_self_play(args):
     latest_v_loss = 0.0
 
     for game_idx in pbar:
-        obs = env.reset()
+        env.reset()
+        obs = env.get_observation(v5_features=(args.input_channels == 5))
         game_history = []
         game_history_sym = []
         done = False
@@ -184,7 +187,8 @@ def train_self_play(args):
             })
 
             # Step Environment
-            obs, reward, done = env.step(chosen_action)
+            _, reward, done = env.step(chosen_action)
+            obs = env.get_observation(v5_features=(args.input_channels == 5))
             move_count += 1
 
         winner = env.winner
@@ -271,6 +275,8 @@ def parse_args():
     parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned checkpoints and weights")
     parser.add_argument("--load-weights", type=str, default=None, help="Path to weights to load before training")
     parser.add_argument("--freeze-conv", action="store_true", help="Freeze representation and dynamics layers")
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
     return parser.parse_args()
 
 if __name__ == "__main__":

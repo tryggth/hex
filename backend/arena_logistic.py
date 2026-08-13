@@ -112,7 +112,8 @@ async def play_match_interactive(
     total_anchors,
     sims_data,
     win_rates,
-    fit_params=None
+    fit_params=None,
+    input_channels=3
 ):
     muzero_wins = 0
     total_games = pairs_per_match * 2
@@ -148,7 +149,7 @@ async def play_match_interactive(
             update_dashboard(sims_data, win_rates, env_a, board_size, info, fit_params)
 
             if env_a.current_player == 1:
-                obs = env_a.get_observation()
+                obs = env_a.get_observation(v5_features=(input_channels == 5))
                 obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
                 t0 = time.time()
                 root = await latent_mcts_a.search(
@@ -211,7 +212,7 @@ async def play_match_interactive(
                 classic_moves += 1
                 env_b.step(best_act)
             else:
-                obs = env_b.get_observation()
+                obs = env_b.get_observation(v5_features=(input_channels == 5))
                 obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
                 t0 = time.time()
                 root = await latent_mcts_b.search(
@@ -247,6 +248,8 @@ async def main():
     parser.add_argument("--muzero-sims", type=int, default=400)
     parser.add_argument("--classic-anchors", type=str, default="250,500,1000,2500,5000,10000")
     parser.add_argument("--games-per-anchor", type=int, default=10)
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
     args = parser.parse_args()
 
     board_size = args.board_size
@@ -271,7 +274,9 @@ async def main():
             board_size=board_size,
             action_space_size=action_space_size,
             latent_channels=latent_channels,
-            num_res_blocks=num_res_blocks
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
         )
         model.load_state_dict(saved_weights)
         args.board_size = board_size
@@ -280,7 +285,9 @@ async def main():
             board_size=board_size,
             action_space_size=action_space_size,
             latent_channels=latent_channels,
-            num_res_blocks=num_res_blocks
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
         )
     model.eval()
 
@@ -307,7 +314,8 @@ async def main():
             total_anchors=len(anchors),
             sims_data=sims_data,
             win_rates=win_rates,
-            fit_params=fit_params
+            fit_params=fit_params,
+            input_channels=args.input_channels
         )
         
         sims_data.append(anchor)
