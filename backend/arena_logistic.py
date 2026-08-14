@@ -247,7 +247,7 @@ async def play_match_interactive(
         update_dashboard(sims_data, win_rates, env_b, board_size, info, fit_params)
 
     win_rate = muzero_wins / total_games
-    return win_rate, muzero_time_total, muzero_moves, classic_time_total, classic_moves
+    return win_rate, muzero_wins, total_games, muzero_time_total, muzero_moves, classic_time_total, classic_moves
 
 async def main():
     parser = argparse.ArgumentParser()
@@ -306,6 +306,7 @@ async def main():
 
     sims_data = []
     win_rates = []
+    match_records = []
     fit_params = None
     
     total_muzero_time = 0.0
@@ -321,7 +322,7 @@ async def main():
 
         while True:
             phase1_step += 1
-            win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
+            win_rate, muz_w, tot_g, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
                 board_size=args.board_size,
                 muzero_sims=args.muzero_sims,
                 classic_sims=sims,
@@ -338,6 +339,14 @@ async def main():
 
             sims_data.append(sims)
             win_rates.append(win_rate)
+            match_records.append({
+                "phase": "Phase 1: Hunt",
+                "anchor": sims,
+                "muzero_wins": muz_w,
+                "classic_wins": tot_g - muz_w,
+                "total_games": tot_g,
+                "win_rate": win_rate
+            })
 
             total_muzero_time += muz_t
             total_muzero_moves += muz_m
@@ -418,7 +427,7 @@ async def main():
         total_focused = len(focused_anchors)
 
         for idx, anchor in enumerate(focused_anchors):
-            win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
+            win_rate, muz_w, tot_g, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
                 board_size=args.board_size,
                 muzero_sims=args.muzero_sims,
                 classic_sims=anchor,
@@ -435,6 +444,14 @@ async def main():
 
             sims_data.append(anchor)
             win_rates.append(win_rate)
+            match_records.append({
+                "phase": "Phase 2: Focused",
+                "anchor": anchor,
+                "muzero_wins": muz_w,
+                "classic_wins": tot_g - muz_w,
+                "total_games": tot_g,
+                "win_rate": win_rate
+            })
 
             total_muzero_time += muz_t
             total_muzero_moves += muz_m
@@ -456,7 +473,7 @@ async def main():
         pairs_per_anchor = max(1, args.games_per_anchor // 2)
 
         for idx, anchor in enumerate(anchors):
-            win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
+            win_rate, muz_w, tot_g, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
                 board_size=args.board_size,
                 muzero_sims=args.muzero_sims,
                 classic_sims=anchor,
@@ -467,11 +484,20 @@ async def main():
                 sims_data=sims_data,
                 win_rates=win_rates,
                 fit_params=fit_params,
-                input_channels=args.input_channels
+                input_channels=args.input_channels,
+                phase_str="Fixed Anchors"
             )
             
             sims_data.append(anchor)
             win_rates.append(win_rate)
+            match_records.append({
+                "phase": "Fixed Anchors",
+                "anchor": anchor,
+                "muzero_wins": muz_w,
+                "classic_wins": tot_g - muz_w,
+                "total_games": tot_g,
+                "win_rate": win_rate
+            })
             
             total_muzero_time += muz_t
             total_muzero_moves += muz_m
@@ -490,6 +516,26 @@ async def main():
 
     # Final summary display
     print(f"\n====================================")
+    print(f"📋 MATCH & ROUND WIN/LOSS RECORDS")
+    print(f"{'Phase':<18} {'Anchor':<14} {'Score (M - C)':<16} {'Win Rate':<10} {'Games':<8}")
+    print(f"───────────────────────────────────────────────────────────────────")
+    total_m_wins = 0
+    total_c_wins = 0
+    total_g_all = 0
+    for r in match_records:
+        total_m_wins += r["muzero_wins"]
+        total_c_wins += r["classic_wins"]
+        total_g_all += r["total_games"]
+        p_str = f"{r['phase']}"
+        a_str = f"{r['anchor']} sims"
+        s_str = f"{r['muzero_wins']}W - {r['classic_wins']}L"
+        w_str = f"{r['win_rate']*100:.1f}%"
+        g_str = f"{r['total_games']}"
+        print(f"{p_str:<18} {a_str:<14} {s_str:<16} {w_str:<10} {g_str:<8}")
+    print(f"───────────────────────────────────────────────────────────────────")
+    overall_wr = (total_m_wins / max(1, total_g_all)) * 100
+    print(f"{'TOTAL':<18} {'All':<14} {f'{total_m_wins}W - {total_c_wins}L':<16} {f'{overall_wr:.1f}%':<10} {total_g_all:<8}")
+    print(f"====================================")
     
     # Timing Stats
     t_muzero = total_muzero_time / max(1, total_muzero_moves)
