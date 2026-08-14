@@ -73,10 +73,13 @@ def update_dashboard(sims_data, win_rates, current_env, board_size, extra_info, 
             plotext.plot(sims_line.tolist(), y_line.tolist(), color="green", label="Fit")
             plotext.scatter([cse], [0.5], color="yellow", marker="x", label="CSE")
             
-            se = np.sqrt(pcov[1, 1])
-            lower_bound = np.exp(x0 - 1.96 * se)
-            upper_bound = np.exp(x0 + 1.96 * se)
-            plotext.title(f"Logistic CSE (Current CSE: {cse:.1f} | 95% CI: [{lower_bound:.1f}, {upper_bound:.1f}])")
+            if pcov is not None and not np.isinf(pcov[1, 1]) and pcov[1, 1] >= 0:
+                se = np.sqrt(pcov[1, 1])
+                lower_bound = np.exp(x0 - 1.96 * se)
+                upper_bound = np.exp(x0 + 1.96 * se)
+                plotext.title(f"Logistic CSE (Current CSE: {cse:.1f} | 95% CI: [{lower_bound:.1f}, {upper_bound:.1f}])")
+            else:
+                plotext.title(f"Logistic CSE (Current CSE: {cse:.1f})")
         else:
             plotext.title("Logistic CSE Evaluation")
         plotext.xscale("log")
@@ -113,7 +116,8 @@ async def play_match_interactive(
     sims_data,
     win_rates,
     fit_params=None,
-    input_channels=3
+    input_channels=3,
+    phase_str=None
 ):
     muzero_wins = 0
     total_games = pairs_per_match * 2
@@ -124,6 +128,10 @@ async def play_match_interactive(
     muzero_moves = 0
     classic_time_total = 0.0
     classic_moves = 0
+
+    anchor_header = f"{anchor_idx+1}/{total_anchors} ({classic_sims} Sims)"
+    if phase_str:
+        anchor_header = f"[{phase_str}] {anchor_header}"
 
     for pair_idx in range(pairs_per_match):
         # --- Game A: MuZero = Red (1), Classic = Blue (2) ---
@@ -140,7 +148,7 @@ async def play_match_interactive(
                 break
                 
             info = {
-                "Anchor": f"{anchor_idx+1}/{total_anchors} ({classic_sims} Sims)",
+                "Anchor": anchor_header,
                 "Game": f"{game_count}/{total_games} (MuZero=Red)",
                 "Move": f"#{move_num}",
                 "Turn": "MuZero (Red)" if env_a.current_player == 1 else "Classic (Blue)",
@@ -175,7 +183,7 @@ async def play_match_interactive(
             muzero_wins += 1
 
         info = {
-            "Anchor": f"{anchor_idx+1}/{total_anchors} ({classic_sims} Sims)",
+            "Anchor": anchor_header,
             "Game": f"{game_count}/{total_games} (MuZero=Red)",
             "Status": f"FINISHED ({'MuZero Won' if env_a.winner==1 else 'Classic Won'})",
             "Match Score": f"MuZero {muzero_wins} - {game_count - muzero_wins} Classic"
@@ -196,7 +204,7 @@ async def play_match_interactive(
                 break
                 
             info = {
-                "Anchor": f"{anchor_idx+1}/{total_anchors} ({classic_sims} Sims)",
+                "Anchor": anchor_header,
                 "Game": f"{game_count}/{total_games} (MuZero=Blue)",
                 "Move": f"#{move_num}",
                 "Turn": "Classic (Red)" if env_b.current_player == 1 else "MuZero (Blue)",
@@ -231,7 +239,7 @@ async def play_match_interactive(
             muzero_wins += 1
 
         info = {
-            "Anchor": f"{anchor_idx+1}/{total_anchors} ({classic_sims} Sims)",
+            "Anchor": anchor_header,
             "Game": f"{game_count}/{total_games} (MuZero=Blue)",
             "Status": f"FINISHED ({'MuZero Won' if env_b.winner==2 else 'Classic Won'})",
             "Match Score": f"MuZero {muzero_wins} - {game_count - muzero_wins} Classic"
@@ -250,6 +258,11 @@ async def main():
     parser.add_argument("--games-per-anchor", type=int, default=10)
     parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
     parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
+    parser.add_argument("--adaptive", action="store_true", help="Enable two-phase adaptive bracket hunting and concentrated sampling")
+    parser.add_argument("--start-sims", type=int, default=5000, help="Initial classic simulation anchor for adaptive hunt")
+    parser.add_argument("--min-sims", type=int, default=500, help="Minimum simulation floor for adaptive hunt")
+    parser.add_argument("--max-sims", type=int, default=100000, help="Maximum simulation ceiling for adaptive hunt")
+    parser.add_argument("--bracket-games", type=int, default=4, help="Number of games (paired Red/Blue) per step during Phase 1 hunt")
     args = parser.parse_args()
 
     board_size = args.board_size
@@ -300,41 +313,180 @@ async def main():
     total_classic_time = 0.0
     total_classic_sims_completed = 0
 
-    anchors = [int(x) for x in args.classic_anchors.split(',')]
-    pairs_per_anchor = max(1, args.games_per_anchor // 2)
+    if args.adaptive:
+        # Phase 1: Bracket Hunting (Geometric Stride with Early Exit)
+        sims = args.start_sims
+        phase1_step = 0
+        bracket_pairs = max(1, args.bracket_games // 2)
 
-    for idx, anchor in enumerate(anchors):
-        win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
-            board_size=args.board_size,
-            muzero_sims=args.muzero_sims,
-            classic_sims=anchor,
-            pairs_per_match=pairs_per_anchor,
-            model=model,
-            anchor_idx=idx,
-            total_anchors=len(anchors),
-            sims_data=sims_data,
-            win_rates=win_rates,
-            fit_params=fit_params,
-            input_channels=args.input_channels
-        )
-        
-        sims_data.append(anchor)
-        win_rates.append(win_rate)
-        
-        total_muzero_time += muz_t
-        total_muzero_moves += muz_m
-        total_classic_time += clas_t
-        total_classic_sims_completed += (clas_m * anchor)
+        while True:
+            phase1_step += 1
+            win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
+                board_size=args.board_size,
+                muzero_sims=args.muzero_sims,
+                classic_sims=sims,
+                pairs_per_match=bracket_pairs,
+                model=model,
+                anchor_idx=phase1_step - 1,
+                total_anchors="Hunt",
+                sims_data=sims_data,
+                win_rates=win_rates,
+                fit_params=fit_params,
+                input_channels=args.input_channels,
+                phase_str="Phase 1: Hunt"
+            )
 
-        # Update fit if we have enough points
-        if len(sims_data) >= 2:
-            try:
-                x_data = np.log(sims_data)
-                y_data = np.array(win_rates)
-                popt, pcov = curve_fit(sigmoid, x_data, y_data, p0=[-1.0, np.mean(x_data)])
-                fit_params = (popt, pcov)
-            except Exception:
-                fit_params = None
+            sims_data.append(sims)
+            win_rates.append(win_rate)
+
+            total_muzero_time += muz_t
+            total_muzero_moves += muz_m
+            total_classic_time += clas_t
+            total_classic_sims_completed += (clas_m * sims)
+
+            if len(sims_data) >= 2:
+                try:
+                    x_data = np.log(sims_data)
+                    y_data = np.array(win_rates)
+                    popt, pcov = curve_fit(sigmoid, x_data, y_data, p0=[-1.0, np.mean(x_data)], maxfev=10000)
+                    fit_params = (popt, pcov)
+                except Exception:
+                    fit_params = None
+
+            p = win_rate
+            has_high = any(w > 0.5 for w in win_rates)
+            has_low = any(w < 0.5 for w in win_rates)
+
+            # Early exit / termination criteria
+            if (0.25 < p < 0.75) or (has_high and has_low):
+                break
+
+            if p >= 0.75:
+                if sims >= args.max_sims:
+                    break
+                next_sims = min(args.max_sims, int(sims * 2.5))
+                if next_sims == sims or next_sims in sims_data:
+                    break
+                sims = next_sims
+            elif p <= 0.25:
+                if sims <= args.min_sims:
+                    break
+                next_sims = max(args.min_sims, int(sims * 0.4))
+                if next_sims == sims or next_sims in sims_data:
+                    break
+                sims = next_sims
+
+        # Phase 2: Focused Grid Sampling
+        # Determine [N_low, N_high] bracket that straddles parity
+        tested_pairs = list(zip(sims_data, win_rates))
+        high_win_sims = [s for s, w in tested_pairs if w >= 0.5]
+        low_win_sims = [s for s, w in tested_pairs if w <= 0.5]
+
+        if high_win_sims and low_win_sims:
+            n_low = max(high_win_sims)
+            n_high = min(low_win_sims)
+            if n_low > n_high:
+                n_low, n_high = n_high, n_low
+            elif n_low == n_high:
+                n_low = max(args.min_sims, int(n_low * 0.5))
+                n_high = min(args.max_sims, int(n_high * 2.0))
+        elif high_win_sims:
+            n_low = max(high_win_sims)
+            n_high = args.max_sims
+            if n_low >= n_high:
+                n_low = max(args.min_sims, int(n_high * 0.5))
+        elif low_win_sims:
+            n_low = args.min_sims
+            n_high = min(low_win_sims)
+            if n_low >= n_high:
+                n_high = min(args.max_sims, int(n_low * 2.0))
+        else:
+            n_low = args.min_sims
+            n_high = args.max_sims
+
+        if n_low >= n_high:
+            n_low = max(args.min_sims, int(n_high * 0.5))
+            n_high = min(args.max_sims, int(n_low * 2.0))
+            if n_low >= n_high:
+                n_high = n_low + 100
+
+        focused_anchors = sorted(list(set(int(round(x)) for x in np.geomspace(n_low, n_high, num=5))))
+        if len(focused_anchors) < 4:
+            focused_anchors = sorted(list(set(int(round(x)) for x in np.linspace(n_low, n_high, num=5))))
+
+        pairs_per_anchor = max(1, args.games_per_anchor // 2)
+        total_focused = len(focused_anchors)
+
+        for idx, anchor in enumerate(focused_anchors):
+            win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
+                board_size=args.board_size,
+                muzero_sims=args.muzero_sims,
+                classic_sims=anchor,
+                pairs_per_match=pairs_per_anchor,
+                model=model,
+                anchor_idx=idx,
+                total_anchors=total_focused,
+                sims_data=sims_data,
+                win_rates=win_rates,
+                fit_params=fit_params,
+                input_channels=args.input_channels,
+                phase_str="Phase 2: Focused"
+            )
+
+            sims_data.append(anchor)
+            win_rates.append(win_rate)
+
+            total_muzero_time += muz_t
+            total_muzero_moves += muz_m
+            total_classic_time += clas_t
+            total_classic_sims_completed += (clas_m * anchor)
+
+            if len(sims_data) >= 2:
+                try:
+                    x_data = np.log(sims_data)
+                    y_data = np.array(win_rates)
+                    popt, pcov = curve_fit(sigmoid, x_data, y_data, p0=[-1.0, np.mean(x_data)], maxfev=10000)
+                    fit_params = (popt, pcov)
+                except Exception:
+                    fit_params = None
+
+    else:
+        # Fixed Anchors Mode
+        anchors = [int(x) for x in args.classic_anchors.split(',')]
+        pairs_per_anchor = max(1, args.games_per_anchor // 2)
+
+        for idx, anchor in enumerate(anchors):
+            win_rate, muz_t, muz_m, clas_t, clas_m = await play_match_interactive(
+                board_size=args.board_size,
+                muzero_sims=args.muzero_sims,
+                classic_sims=anchor,
+                pairs_per_match=pairs_per_anchor,
+                model=model,
+                anchor_idx=idx,
+                total_anchors=len(anchors),
+                sims_data=sims_data,
+                win_rates=win_rates,
+                fit_params=fit_params,
+                input_channels=args.input_channels
+            )
+            
+            sims_data.append(anchor)
+            win_rates.append(win_rate)
+            
+            total_muzero_time += muz_t
+            total_muzero_moves += muz_m
+            total_classic_time += clas_t
+            total_classic_sims_completed += (clas_m * anchor)
+
+            # Update fit if we have enough points
+            if len(sims_data) >= 2:
+                try:
+                    x_data = np.log(sims_data)
+                    y_data = np.array(win_rates)
+                    popt, pcov = curve_fit(sigmoid, x_data, y_data, p0=[-1.0, np.mean(x_data)], maxfev=10000)
+                    fit_params = (popt, pcov)
+                except Exception:
+                    fit_params = None
 
     # Final summary display
     print(f"\n====================================")
@@ -351,10 +503,13 @@ async def main():
     if fit_params is not None:
         popt, pcov = fit_params
         cse = np.exp(popt[1])
-        se = np.sqrt(pcov[1, 1])
-        lower_bound = np.exp(popt[1] - 1.96 * se)
-        upper_bound = np.exp(popt[1] + 1.96 * se)
-        print(f"\n📊 SIMULATION CSE (N_50): {cse:.1f} (95% CI: [{lower_bound:.1f}, {upper_bound:.1f}])")
+        if pcov is not None and not np.isinf(pcov[1, 1]) and pcov[1, 1] >= 0:
+            se = np.sqrt(pcov[1, 1])
+            lower_bound = np.exp(popt[1] - 1.96 * se)
+            upper_bound = np.exp(popt[1] + 1.96 * se)
+            print(f"\n📊 SIMULATION CSE (N_50): {cse:.1f} (95% CI: [{lower_bound:.1f}, {upper_bound:.1f}])")
+        else:
+            print(f"\n📊 SIMULATION CSE (N_50): {cse:.1f} (95% CI: [N/A, N/A])")
         
         speedup = (cse * t_classic_sim) / max(1e-9, t_muzero)
         print(f"🚀 WALL-CLOCK SPEEDUP FACTOR: {speedup:.2f}x")

@@ -80,6 +80,9 @@ def train_self_play(args):
     action_space_size = args.board_size * args.board_size
     env = HexEnv(board_size=args.board_size)
     
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  Compute Device:       {device}")
+
     model = MuZeroModels(
         board_size=args.board_size,
         action_space_size=action_space_size,
@@ -89,8 +92,10 @@ def train_self_play(args):
         use_fcn=args.use_fcn
     )
     if args.load_weights:
-        model.load_state_dict(torch.load(args.load_weights, map_location="cpu"), strict=False)
+        model.load_state_dict(torch.load(args.load_weights, map_location=device), strict=False)
         print(f"  Loaded weights from {args.load_weights}")
+
+    model.to(device)
 
     if args.freeze_conv:
         for param in model.representation.parameters():
@@ -125,7 +130,7 @@ def train_self_play(args):
         move_count = 0
 
         while not done:
-            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
             legal = env.legal_actions()
 
             mcts = LatentMCTS(model=model, c_puct=1.25)
@@ -209,6 +214,10 @@ def train_self_play(args):
             model.train()
             for epoch in range(args.epochs):
                 b_obs, b_actions, b_policies, b_values = replay_buffer.sample(args.batch_size, num_unroll_steps=5)
+                b_obs = b_obs.to(device)
+                b_actions = b_actions.to(device)
+                b_policies = b_policies.to(device)
+                b_values = b_values.to(device)
                 val_pred, rw_pred, policy_logits, hidden_state = model.initial_inference(b_obs)
 
                 # Initial step loss

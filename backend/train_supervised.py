@@ -84,6 +84,9 @@ def main():
         
     print(f"Loaded {len(replay_buffer)} trajectories.")
 
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
     model = MuZeroModels(
         board_size=args.board_size,
         action_space_size=args.board_size ** 2,
@@ -91,7 +94,7 @@ def main():
         num_res_blocks=args.num_blocks,
         input_channels=args.input_channels,
         use_fcn=args.use_fcn
-    )
+    ).to(device)
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
     steps_per_epoch = max(1, len(replay_buffer) * 20 // args.batch_size)
@@ -107,6 +110,10 @@ def main():
         
         for step in pbar:
             b_obs, b_actions, b_policies, b_values = replay_buffer.sample(args.batch_size, num_unroll_steps=5)
+            b_obs = b_obs.to(device)
+            b_actions = b_actions.to(device)
+            b_policies = b_policies.to(device)
+            b_values = b_values.to(device)
             val_pred, rw_pred, policy_logits, hidden_state = model.initial_inference(b_obs)
 
             # Initial step loss
