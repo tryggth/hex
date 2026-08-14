@@ -106,7 +106,6 @@ class PredictionNetwork(nn.Module):
         if self.use_fcn:
             self.policy_conv = nn.Conv2d(latent_channels, 1, kernel_size=1)
             self.value_conv = nn.Conv2d(latent_channels, 1, kernel_size=1)
-            self.value_relu = nn.ReLU(inplace=True)
             self.value_pool = nn.AdaptiveAvgPool2d((1, 1))
         else:
             # Policy Head
@@ -130,7 +129,6 @@ class PredictionNetwork(nn.Module):
             
             # Value [-1, 1]
             v = self.value_conv(latent_state)
-            v = self.value_relu(v)
             v = self.value_pool(v)
             v = torch.flatten(v, start_dim=1)
             value = torch.tanh(v)
