@@ -3,6 +3,7 @@ import asyncio
 import os
 import math
 import time
+import traceback
 import numpy as np
 import torch
 import plotext
@@ -11,6 +12,74 @@ from backend.hex_env import HexEnv
 from backend.muzero_nets import MuZeroModels
 from backend.latent_mcts import LatentMCTS
 from backend.classic_mcts import ClassicMCTS
+
+CRASH_DUMP_FILE = "arena_crash_dump.log"
+
+def dump_crash_telemetry(exc: Exception, optimizer=None, extra_info: dict = None, filepath: str = CRASH_DUMP_FILE):
+    """
+    Captures full exception traceback, system metadata, and current optimizer/game state,
+    writing a diagnostic dump to disk and printing it cleanly.
+    """
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    report_lines = [
+        "=" * 76,
+        f"🚨 ARENA LOGISTIC CRASH DUMP: {timestamp}",
+        "=" * 76,
+        "",
+        "── 1. EXCEPTION TRACEBACK ──",
+        traceback.format_exc(),
+        "",
+        "── 2. SYSTEM & RUNTIME CONTEXT ──",
+        f"  • Python/Platform: {os.sys.version}",
+        f"  • PyTorch Version: {torch.__version__}",
+        f"  • CUDA Available:  {torch.cuda.is_available()}",
+        f"  • Current PID:     {os.getpid()}",
+        f"  • Working Dir:     {os.getcwd()}",
+    ]
+
+    if extra_info:
+        report_lines.append("")
+        report_lines.append("── 3. RECENT GAME / STEP CONTEXT ──")
+        for k, v in extra_info.items():
+            report_lines.append(f"  • {k:<18}: {v}")
+
+    if optimizer is not None:
+        report_lines.append("")
+        report_lines.append("── 4. OPTIMIZER STATE & ANCHOR DATA ──")
+        report_lines.append(f"  • Is Bracketed:     {getattr(optimizer, 'is_bracketed', False)}")
+        report_lines.append(f"  • Current Sims:     {getattr(optimizer, 'current_sims', 'N/A')}")
+        report_lines.append(f"  • N_50 Estimate:    {getattr(optimizer, 'n50', 'N/A')}")
+        report_lines.append(f"  • ln(N_50) (x0):    {getattr(optimizer, 'x0', 'N/A')}")
+        report_lines.append(f"  • Standard Error:   {getattr(optimizer, 'se_x0', 'N/A')}")
+        report_lines.append(f"  • 95% CI Bounds:    [{getattr(optimizer, 'ci_lower', 'N/A')}, {getattr(optimizer, 'ci_upper', 'N/A')}]")
+        report_lines.append(f"  • 95% CI Ratio:     {getattr(optimizer, 'ci_ratio', 'N/A')}")
+        report_lines.append(f"  • Beta0 / Beta1:    {getattr(optimizer, 'beta0', 'N/A')} / {getattr(optimizer, 'beta1', 'N/A')}")
+        report_lines.append("")
+        report_lines.append("  • Aggregated Anchor Data:")
+        for s, d in getattr(optimizer, 'anchor_data', {}).items():
+            report_lines.append(f"      Anchor {s:>7,d} sims: {d.get('wins', 0)}W / {d.get('games', 0)} games ({d.get('wins', 0)/max(1, d.get('games', 1))*100:.1f}%)")
+        report_lines.append("")
+        report_lines.append("  • Sequential Match History:")
+        for m in getattr(optimizer, 'match_history', []):
+            report_lines.append(f"      Step #{m.get('step', '?')}: {m.get('phase', '?')} @ {m.get('anchor', '?'):,} sims -> {m.get('wins', 0)}W - {m.get('losses', 0)}L ({m.get('win_rate', 0)*100:.1f}%)")
+
+    report_lines.append("")
+    report_lines.append("=" * 76)
+
+    full_text = "\n".join(report_lines)
+    try:
+        with open(filepath, "w") as f:
+            f.write(full_text)
+    except Exception as write_err:
+        print(f"⚠️ Could not write crash dump file: {write_err}")
+
+    print("\n\n" + "!" * 76)
+    print("🚨 AN UNHANDLED EXCEPTION OCCURRED DURING ARENA EVALUATION")
+    print(f"📁 Full diagnostic report dumped to: {os.path.abspath(filepath)}")
+    print("!" * 76)
+    print(traceback.format_exc())
+    print("!" * 76 + "\n")
+
 
 class SequentialCSEOptimizer:
     """
@@ -40,7 +109,7 @@ class SequentialCSEOptimizer:
         # Current GLM parameters
         self.beta0 = 0.0
         self.beta1 = -1.0
-        self.x0 = math.log(start_sims)
+        self.x0 = math.log(max(1, start_sims))
         self.n50 = float(start_sims)
         self.se_x0 = 1.0
         self.ci_lower = self.n50 * 0.3
@@ -77,7 +146,10 @@ class SequentialCSEOptimizer:
         self.is_bracketed = (has_high and has_low)
 
         # Fit Binomial GLM
-        self.fit_glm()
+        try:
+            self.fit_glm()
+        except Exception as glm_err:
+            print(f"⚠️ GLM Fit warning: {glm_err}")
 
         # Record trajectory
         if self.n50 is not None and self.ci_lower is not None and self.ci_upper is not None:
@@ -96,14 +168,14 @@ class SequentialCSEOptimizer:
         if len(unique_anchors) == 0:
             return
 
-        x_arr = np.array([math.log(s) for s in unique_anchors], dtype=float)
+        x_arr = np.array([math.log(max(1, s)) for s in unique_anchors], dtype=float)
         n_arr = np.array([self.anchor_data[s]["games"] for s in unique_anchors], dtype=float)
         k_arr = np.array([self.anchor_data[s]["wins"] for s in unique_anchors], dtype=float)
 
         if len(unique_anchors) < 2:
             sim = unique_anchors[0]
             self.n50 = float(sim)
-            self.x0 = math.log(self.n50)
+            self.x0 = math.log(max(1.0, self.n50))
             self.ci_lower = self.n50 * 0.4
             self.ci_upper = self.n50 * 2.5
             self.ci_ratio = self.ci_upper / max(1e-9, self.ci_lower)
@@ -122,8 +194,14 @@ class SequentialCSEOptimizer:
 
         init_b1 = -1.0
         init_b0 = -init_b1 * float(np.mean(x_arr))
-        res = minimize(neg_log_lik, [init_b0, init_b1], method='L-BFGS-B')
-        b0, b1 = res.x
+        try:
+            res = minimize(neg_log_lik, [init_b0, init_b1], method='L-BFGS-B')
+            b0, b1 = res.x
+        except Exception:
+            b0, b1 = init_b0, init_b1
+
+        if not np.isfinite(b0) or not np.isfinite(b1):
+            b0, b1 = init_b0, init_b1
 
         if b1 >= -1e-4:
             b1 = -1e-4
@@ -146,13 +224,19 @@ class SequentialCSEOptimizer:
         x0 = -b0 / b1
         grad_g = np.array([-1.0 / b1, b0 / (b1 ** 2)])
         var_x0 = float(grad_g.T @ cov @ grad_g)
+        if not np.isfinite(var_x0) or var_x0 <= 0:
+            var_x0 = 1.0
         se_x0 = float(np.sqrt(max(1e-9, var_x0)))
 
-        self.x0 = float(x0)
-        self.n50 = float(np.exp(np.clip(x0, math.log(self.min_sims * 0.1), math.log(self.max_sims * 10.0))))
+        min_log = math.log(max(1.0, self.min_sims * 0.1))
+        max_log = math.log(max(1.0, self.max_sims * 10.0))
+        x0_clamped = float(np.clip(x0, min_log, max_log))
+
+        self.x0 = x0_clamped
+        self.n50 = float(math.exp(x0_clamped))
         self.se_x0 = se_x0
-        self.ci_lower = float(np.exp(x0 - 1.96 * se_x0))
-        self.ci_upper = float(np.exp(x0 + 1.96 * se_x0))
+        self.ci_lower = float(math.exp(max(-5.0, x0_clamped - 1.96 * se_x0)))
+        self.ci_upper = float(math.exp(min(25.0, x0_clamped + 1.96 * se_x0)))
         self.ci_ratio = float(self.ci_upper / max(1e-9, self.ci_lower))
 
     def get_next_anchor(self):
@@ -185,7 +269,11 @@ class SequentialCSEOptimizer:
         else:
             target_x = self.x0 + delta_x
 
-        next_sims = int(round(math.exp(target_x)))
+        try:
+            next_sims = int(round(math.exp(np.clip(target_x, 0.0, 20.0))))
+        except Exception:
+            next_sims = self.start_sims
+
         next_sims = max(self.min_sims, min(self.max_sims, next_sims))
         self.current_sims = next_sims
         return self.current_sims, phase_name
@@ -198,20 +286,26 @@ class SequentialCSEOptimizer:
         if not self.is_bracketed or self.ci_ratio >= 10.0 or total_games_played == 0:
             rem_steps = max(0, max_steps - current_step)
             rem_games = rem_steps * 2
-            rem_sec = rem_games * ema_game_time
+            rem_sec = rem_games * max(0.1, ema_game_time)
             return rem_games, rem_sec
 
-        target_se = math.log(self.target_ci_ratio) / 3.92
+        target_ratio = max(1.01, self.target_ci_ratio)
+        target_se = math.log(target_ratio) / 3.92
         if self.se_x0 <= target_se:
             return 0, 0.0
 
-        # Variance scales inversely with sample size: se proportional to 1/sqrt(G)
-        req_games = total_games_played * ((self.se_x0 / max(1e-6, target_se)) ** 2)
-        rem_games = max(0, int(math.ceil(req_games - total_games_played)))
-        max_possible_rem_games = max(0, (max_steps - current_step) * 2)
-        rem_games = min(rem_games, max_possible_rem_games)
-        rem_sec = rem_games * ema_game_time
-        return rem_games, rem_sec
+        try:
+            req_games = total_games_played * ((self.se_x0 / max(1e-6, target_se)) ** 2)
+            if not np.isfinite(req_games):
+                req_games = max_steps * 2
+            rem_games = max(0, int(math.ceil(req_games - total_games_played)))
+            max_possible_rem_games = max(0, (max_steps - current_step) * 2)
+            rem_games = min(rem_games, max_possible_rem_games)
+            rem_sec = rem_games * max(0.1, ema_game_time)
+            return rem_games, rem_sec
+        except Exception:
+            rem_games = max(0, (max_steps - current_step) * 2)
+            return rem_games, rem_games * max(0.1, ema_game_time)
 
 
 def render_board_lines(env, board_size, extra_info):
@@ -256,75 +350,82 @@ def _visible_len(s: str) -> int:
     return len(ansi_escape.sub('', s))
 
 def update_dashboard(optimizer: SequentialCSEOptimizer, current_env, board_size: int, extra_info: dict):
-    plotext.clear_terminal()
+    try:
+        plotext.clear_terminal()
 
-    unique_anchors = sorted(optimizer.anchor_data.keys())
-    
-    # ── Plot 1: Logistic Win-Rate Curve ──
-    plotext.clf()
-    plotext.plotsize(46, 8)
+        unique_anchors = sorted(optimizer.anchor_data.keys())
+        
+        # ── Plot 1: Logistic Win-Rate Curve ──
+        plotext.clf()
+        plotext.plotsize(46, 8)
 
-    if len(unique_anchors) >= 1:
-        x_sims = unique_anchors
-        y_rates = [optimizer.anchor_data[s]["wins"] / max(1, optimizer.anchor_data[s]["games"]) for s in unique_anchors]
-        plotext.scatter(x_sims, y_rates, color="cyan", label="Anchors")
-        plotext.plot([min(x_sims), max(x_sims)], [0.5, 0.5], color="red")
+        if len(unique_anchors) >= 1:
+            x_sims = unique_anchors
+            y_rates = [optimizer.anchor_data[s]["wins"] / max(1, optimizer.anchor_data[s]["games"]) for s in unique_anchors]
+            plotext.scatter(x_sims, y_rates, color="cyan", label="Anchors")
+            plotext.plot([min(x_sims), max(x_sims)], [0.5, 0.5], color="red")
 
-        if len(unique_anchors) >= 2 and optimizer.n50 is not None:
-            min_s = min(x_sims)
-            max_s = max(x_sims)
-            min_bound = min(min_s, optimizer.n50 * 0.6)
-            max_bound = max(max_s, optimizer.n50 * 1.4)
-            sim_grid = np.geomspace(min_bound, max_bound, 50)
-            x_grid = np.log(sim_grid)
-            p_grid = 1.0 / (1.0 + np.exp(-(optimizer.beta0 + optimizer.beta1 * x_grid)))
-            plotext.plot(sim_grid.tolist(), p_grid.tolist(), color="green", label="Sigmoid")
-            plotext.scatter([optimizer.n50], [0.5], color="yellow", marker="x", label="N50")
-            plotext.title(f"Logistic Curve (N50: {optimizer.n50:.1f} | Ratio: {optimizer.ci_ratio:.2f}x)")
+            if len(unique_anchors) >= 2 and optimizer.n50 is not None and np.isfinite(optimizer.n50):
+                min_s = min(x_sims)
+                max_s = max(x_sims)
+                min_bound = max(1.0, min(min_s, optimizer.n50 * 0.6))
+                max_bound = max(min_bound * 1.2, max(max_s, optimizer.n50 * 1.4))
+                if np.isfinite(min_bound) and np.isfinite(max_bound) and max_bound > min_bound:
+                    sim_grid = np.geomspace(min_bound, max_bound, 50)
+                    x_grid = np.log(sim_grid)
+                    p_grid = 1.0 / (1.0 + np.exp(-(optimizer.beta0 + optimizer.beta1 * x_grid)))
+                    plotext.plot(sim_grid.tolist(), p_grid.tolist(), color="green", label="Sigmoid")
+                    plotext.scatter([optimizer.n50], [0.5], color="yellow", marker="x", label="N50")
+                    plotext.title(f"Logistic Curve (N50: {optimizer.n50:.1f} | Ratio: {optimizer.ci_ratio:.2f}x)")
+                else:
+                    plotext.title("Logistic Win-Rate Curve")
+            else:
+                plotext.title("Logistic Win-Rate Curve")
+            plotext.xscale("log")
         else:
-            plotext.title("Logistic Win-Rate Curve")
-        plotext.xscale("log")
-    else:
-        plotext.title("Logistic Curve (Sampling...)")
+            plotext.title("Logistic Curve (Sampling...)")
 
-    plotext.ylabel("Win Rate")
-    p1_lines = [l for l in plotext.build().split("\n") if l]
+        plotext.ylabel("Win Rate")
+        p1_lines = [l for l in plotext.build().split("\n") if l]
 
-    # ── Plot 2: Real-time 95% CI Convergence Plot ──
-    plotext.clf()
-    plotext.plotsize(46, 8)
+        # ── Plot 2: Real-time 95% CI Convergence Plot ──
+        plotext.clf()
+        plotext.plotsize(46, 8)
 
-    if len(optimizer.step_history) >= 2:
-        steps = optimizer.step_history
-        upper_line = optimizer.ci_upper_history
-        n50_line = optimizer.n50_history
-        lower_line = optimizer.ci_lower_history
+        if len(optimizer.step_history) >= 2:
+            steps = optimizer.step_history
+            upper_line = optimizer.ci_upper_history
+            n50_line = optimizer.n50_history
+            lower_line = optimizer.ci_lower_history
 
-        plotext.plot(steps, upper_line, color="red", label="Upper 95%")
-        plotext.plot(steps, n50_line, color="yellow", marker="sd", label="N50")
-        plotext.plot(steps, lower_line, color="blue", label="Lower 95%")
-        plotext.title(f"95% CI Convergence (Target <= {optimizer.target_ci_ratio:.2f}x)")
-        plotext.xlabel("Evaluation Step")
-        plotext.ylabel("Sims")
-    else:
-        plotext.title("CI Convergence Trajectory")
-        plotext.xlabel("Evaluation Step")
-        plotext.ylabel("Sims")
+            plotext.plot(steps, upper_line, color="red", label="Upper 95%")
+            plotext.plot(steps, n50_line, color="yellow", marker="sd", label="N50")
+            plotext.plot(steps, lower_line, color="blue", label="Lower 95%")
+            plotext.title(f"95% CI Convergence (Target <= {optimizer.target_ci_ratio:.2f}x)")
+            plotext.xlabel("Evaluation Step")
+            plotext.ylabel("Sims")
+        else:
+            plotext.title("CI Convergence Trajectory")
+            plotext.xlabel("Evaluation Step")
+            plotext.ylabel("Sims")
 
-    p2_lines = [l for l in plotext.build().split("\n") if l]
-    chart_lines = p1_lines + p2_lines
-    board_lines = render_board_lines(current_env, board_size, extra_info)
+        p2_lines = [l for l in plotext.build().split("\n") if l]
+        chart_lines = p1_lines + p2_lines
+        board_lines = render_board_lines(current_env, board_size, extra_info)
 
-    max_l = max(len(chart_lines), len(board_lines))
-    output = []
-    for i in range(max_l):
-        raw_c = chart_lines[i] if i < len(chart_lines) else ""
-        v_len = _visible_len(raw_c)
-        c_line = raw_c + (" " * max(0, 46 - v_len))
-        b_line = board_lines[i] if i < len(board_lines) else ""
-        output.append(f"{c_line} │ {b_line}")
+        max_l = max(len(chart_lines), len(board_lines))
+        output = []
+        for i in range(max_l):
+            raw_c = chart_lines[i] if i < len(chart_lines) else ""
+            v_len = _visible_len(raw_c)
+            c_line = raw_c + (" " * max(0, 46 - v_len))
+            b_line = board_lines[i] if i < len(board_lines) else ""
+            output.append(f"{c_line} │ {b_line}")
 
-    print("\n".join(output))
+        print("\n".join(output))
+    except Exception as display_err:
+        # Fallback text rendering if terminal/plotext has an error, so the game never stops!
+        print(f"[{extra_info.get('Eval Step', '')}] {extra_info.get('Current Game', '')} - Move: {extra_info.get('Current Move', '')} (Display Notice: {display_err})")
 
 
 async def play_paired_match(
@@ -463,6 +564,87 @@ async def play_paired_match(
     return win_rate, muzero_wins, total_games, muzero_time_total, muzero_moves, classic_time_total, classic_moves
 
 
+def print_final_telemetry_report(
+    optimizer: SequentialCSEOptimizer,
+    total_muzero_wins: int,
+    total_games: int,
+    total_muzero_time: float,
+    total_muzero_moves: int,
+    total_classic_time: float,
+    total_classic_sims_completed: int,
+    t_elapsed_total: float,
+    muzero_sims: int,
+    target_ci_ratio: float,
+    baseline_log_n50: float = None,
+    interrupted: bool = False
+):
+    print(f"\n========================================================================")
+    header_prefix = "⚠️ INTERMEDIATE / PARTIAL " if interrupted else "📊 "
+    print(f"{header_prefix}ACTIVE SEQUENTIAL EXPERIMENT DESIGN: TELEMETRY REPORT")
+    print(f"========================================================================")
+    
+    print(f"\n📋 MATCH & ROUND WIN/LOSS RECORDS")
+    print(f"{'Step':<6} {'Phase':<24} {'Anchor':<14} {'Score (M - C)':<16} {'Win Rate':<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+    for r in optimizer.match_history:
+        p_str = f"{r['phase']}"
+        a_str = f"{r['anchor']:,} sims"
+        s_str = f"{r['wins']}W - {r['losses']}L"
+        w_str = f"{r['win_rate']*100:.1f}%"
+        print(f"#{r['step']:<5} {p_str:<24} {a_str:<14} {s_str:<16} {w_str:<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+    overall_wr = (total_muzero_wins / max(1, total_games)) * 100
+    print(f"{'TOTAL':<6} {'All Evaluated Steps':<24} {'Aggregated':<14} {f'{total_muzero_wins}W - {total_games - total_muzero_wins}L':<16} {f'{overall_wr:.1f}%':<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+
+    print(f"\n🎯 AGGREGATED ANCHOR SUPPORT POINTS")
+    print(f"{'Anchor Sims':<16} {'Games Played':<14} {'MuZero Wins':<14} {'Win Rate':<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+    for sim in sorted(optimizer.anchor_data.keys()):
+        d = optimizer.anchor_data[sim]
+        wr = (d['wins'] / max(1, d['games'])) * 100
+        print(f"{sim:<16,d} {d['games']:<14d} {d['wins']:<14d} {wr:<9.1f}%")
+    print(f"────────────────────────────────────────────────────────────────────────")
+
+    # Timing Stats
+    t_muzero = total_muzero_time / max(1, total_muzero_moves)
+    t_classic_sim = total_classic_time / max(1, total_classic_sims_completed)
+    crossover = t_muzero / max(1e-9, t_classic_sim)
+
+    print(f"\n⏱️ EXECUTION SPEED & TIMING METRICS")
+    print(f"  • Total Benchmark Time:           {int(t_elapsed_total//60)}m {int(t_elapsed_total%60):02d}s ({total_games} games)")
+    print(f"  • MuZero ({muzero_sims} sims):             {t_muzero:.4f} sec/move")
+    print(f"  • Classic MCTS Simulation Time:   {t_classic_sim*1000:.4f} ms/simulation")
+    print(f"  • Wall-Clock Crossover (N_time):  {crossover:.1f} classic simulations")
+
+    # Convergence & CSE Parity
+    cse = optimizer.n50
+    ci_low = optimizer.ci_lower
+    ci_high = optimizer.ci_upper
+    ci_ratio = optimizer.ci_ratio
+
+    print(f"\n🏆 MODEL EFFICIENCY & CONVERGENCE RESULTS")
+    print(f"  • Natural Log Parity (ln N_50):   {optimizer.x0:.4f} ± {optimizer.se_x0:.4f} (SE)")
+    print(f"  • SIMULATION CSE (N_50):          {cse:.1f}")
+    print(f"  • 95% Confidence Interval:        [{ci_low:.1f}, {ci_high:.1f}]")
+    print(f"  • 95% Parameter Uncertainty Ratio:{ci_ratio:.3f}x (Target: <={target_ci_ratio:.2f}x)")
+    
+    speedup = (cse * t_classic_sim) / max(1e-9, t_muzero)
+    print(f"  • REALIZED WALL-CLOCK SPEEDUP:    {speedup:.2f}x")
+
+    # Diminishing Returns Index
+    if baseline_log_n50 is not None:
+        delta_ln_n50 = optimizer.x0 - baseline_log_n50
+        multiplier = math.exp(delta_ln_n50)
+        print(f"\n📈 MARGINAL RETURN & SEARCH EFFICIENCY GAIN")
+        print(f"  • Baseline ln(N_50):              {baseline_log_n50:.4f}")
+        print(f"  • Current ln(N_50):               {optimizer.x0:.4f}")
+        print(f"  • Delta ln(N_50):                 {delta_ln_n50:+.4f}")
+        print(f"  • Equivalence Scaling Multiplier: {multiplier:.2f}x over baseline")
+
+    print(f"========================================================================\n")
+
+
 async def main():
     parser = argparse.ArgumentParser(description="Active Sequential Logistic Arena for MuZero vs Classic MCTS")
     parser.add_argument("--run-id", type=str, default="v4_clone", help="Run ID for versioned weights")
@@ -540,70 +722,39 @@ async def main():
 
     ema_game_time = 5.0  # Initial EMA estimate in seconds
     t_start_all = time.time()
+    last_context_info = {}
 
-    if args.adaptive:
-        print(f"🎯 Starting Active Sequential Experiment Design (Target CI Ratio: <={args.target_ci_ratio:.2f}x)...")
-        for step in range(1, args.max_eval_steps + 1):
-            classic_sims, phase_name = optimizer.get_next_anchor()
+    try:
+        if args.adaptive:
+            print(f"🎯 Starting Active Sequential Experiment Design (Target CI Ratio: <={args.target_ci_ratio:.2f}x)...")
+            for step in range(1, args.max_eval_steps + 1):
+                classic_sims, phase_name = optimizer.get_next_anchor()
 
-            t_match_start = time.time()
-            win_rate, muz_w, games_played, muz_t, muz_m, clas_t, clas_m = await play_paired_match(
-                board_size=args.board_size,
-                muzero_sims=args.muzero_sims,
-                classic_sims=classic_sims,
-                model=model,
-                optimizer=optimizer,
-                step_num=step,
-                max_steps=args.max_eval_steps,
-                phase_str=phase_name,
-                input_channels=args.input_channels,
-                ema_game_time=ema_game_time,
-                total_muzero_wins_all=total_muzero_wins,
-                total_games_all=total_games
-            )
-            t_match_elapsed = time.time() - t_match_start
+                last_context_info = {
+                    "Step": step,
+                    "Phase": phase_name,
+                    "Sims": classic_sims,
+                    "Total Games": total_games
+                }
 
-            # Update rolling EMA of game time
-            match_avg_game_time = t_match_elapsed / max(1, games_played)
-            ema_game_time = 0.3 * match_avg_game_time + 0.7 * ema_game_time
-
-            total_muzero_wins += muz_w
-            total_games += games_played
-            total_muzero_time += muz_t
-            total_muzero_moves += muz_m
-            total_classic_time += clas_t
-            total_classic_sims_completed += (clas_m * classic_sims)
-
-            optimizer.add_match_result(classic_sims, muz_w, games_played, phase_name)
-
-            if optimizer.converged:
-                break
-    else:
-        # Fixed Anchors Mode
-        anchors = [int(x) for x in args.classic_anchors.split(',')]
-        pairs_per_anchor = max(1, args.games_per_anchor // 2)
-        total_steps = len(anchors) * pairs_per_anchor
-        step = 0
-
-        for anchor in anchors:
-            for p in range(pairs_per_anchor):
-                step += 1
                 t_match_start = time.time()
                 win_rate, muz_w, games_played, muz_t, muz_m, clas_t, clas_m = await play_paired_match(
                     board_size=args.board_size,
                     muzero_sims=args.muzero_sims,
-                    classic_sims=anchor,
+                    classic_sims=classic_sims,
                     model=model,
                     optimizer=optimizer,
                     step_num=step,
-                    max_steps=total_steps,
-                    phase_str="Fixed Anchors",
+                    max_steps=args.max_eval_steps,
+                    phase_str=phase_name,
                     input_channels=args.input_channels,
                     ema_game_time=ema_game_time,
                     total_muzero_wins_all=total_muzero_wins,
                     total_games_all=total_games
                 )
                 t_match_elapsed = time.time() - t_match_start
+
+                # Update rolling EMA of game time
                 match_avg_game_time = t_match_elapsed / max(1, games_played)
                 ema_game_time = 0.3 * match_avg_game_time + 0.7 * ema_game_time
 
@@ -612,77 +763,112 @@ async def main():
                 total_muzero_time += muz_t
                 total_muzero_moves += muz_m
                 total_classic_time += clas_t
-                total_classic_sims_completed += (clas_m * anchor)
+                total_classic_sims_completed += (clas_m * classic_sims)
 
-                optimizer.add_match_result(anchor, muz_w, games_played, "Fixed Anchors")
+                optimizer.add_match_result(classic_sims, muz_w, games_played, phase_name)
 
-    # ── Final Summary Telemetry Report ──
-    t_elapsed_total = time.time() - t_start_all
-    print(f"\n========================================================================")
-    print(f"📊 ACTIVE SEQUENTIAL EXPERIMENT DESIGN: FINAL TELEMETRY REPORT")
-    print(f"========================================================================")
-    
-    print(f"\n📋 MATCH & ROUND WIN/LOSS RECORDS")
-    print(f"{'Step':<6} {'Phase':<24} {'Anchor':<14} {'Score (M - C)':<16} {'Win Rate':<10}")
-    print(f"────────────────────────────────────────────────────────────────────────")
-    for r in optimizer.match_history:
-        p_str = f"{r['phase']}"
-        a_str = f"{r['anchor']:,} sims"
-        s_str = f"{r['wins']}W - {r['losses']}L"
-        w_str = f"{r['win_rate']*100:.1f}%"
-        print(f"#{r['step']:<5} {p_str:<24} {a_str:<14} {s_str:<16} {w_str:<10}")
-    print(f"────────────────────────────────────────────────────────────────────────")
-    overall_wr = (total_muzero_wins / max(1, total_games)) * 100
-    print(f"{'TOTAL':<6} {'All Evaluated Steps':<24} {'Aggregated':<14} {f'{total_muzero_wins}W - {total_games - total_muzero_wins}L':<16} {f'{overall_wr:.1f}%':<10}")
-    print(f"────────────────────────────────────────────────────────────────────────")
+                if optimizer.converged:
+                    break
+        else:
+            # Fixed Anchors Mode
+            anchors = [int(x) for x in args.classic_anchors.split(',')]
+            pairs_per_anchor = max(1, args.games_per_anchor // 2)
+            total_steps = len(anchors) * pairs_per_anchor
+            step = 0
 
-    print(f"\n🎯 AGGREGATED ANCHOR SUPPORT POINTS")
-    print(f"{'Anchor Sims':<16} {'Games Played':<14} {'MuZero Wins':<14} {'Win Rate':<10}")
-    print(f"────────────────────────────────────────────────────────────────────────")
-    for sim in sorted(optimizer.anchor_data.keys()):
-        d = optimizer.anchor_data[sim]
-        wr = (d['wins'] / max(1, d['games'])) * 100
-        print(f"{sim:<16,d} {d['games']:<14d} {d['wins']:<14d} {wr:<9.1f}%")
-    print(f"────────────────────────────────────────────────────────────────────────")
+            for anchor in anchors:
+                for p in range(pairs_per_anchor):
+                    step += 1
+                    last_context_info = {
+                        "Step": step,
+                        "Anchor": anchor,
+                        "Total Games": total_games
+                    }
+                    t_match_start = time.time()
+                    win_rate, muz_w, games_played, muz_t, muz_m, clas_t, clas_m = await play_paired_match(
+                        board_size=args.board_size,
+                        muzero_sims=args.muzero_sims,
+                        classic_sims=anchor,
+                        model=model,
+                        optimizer=optimizer,
+                        step_num=step,
+                        max_steps=total_steps,
+                        phase_str="Fixed Anchors",
+                        input_channels=args.input_channels,
+                        ema_game_time=ema_game_time,
+                        total_muzero_wins_all=total_muzero_wins,
+                        total_games_all=total_games
+                    )
+                    t_match_elapsed = time.time() - t_match_start
+                    match_avg_game_time = t_match_elapsed / max(1, games_played)
+                    ema_game_time = 0.3 * match_avg_game_time + 0.7 * ema_game_time
 
-    # Timing Stats
-    t_muzero = total_muzero_time / max(1, total_muzero_moves)
-    t_classic_sim = total_classic_time / max(1, total_classic_sims_completed)
-    crossover = t_muzero / max(1e-9, t_classic_sim)
+                    total_muzero_wins += muz_w
+                    total_games += games_played
+                    total_muzero_time += muz_t
+                    total_muzero_moves += muz_m
+                    total_classic_time += clas_t
+                    total_classic_sims_completed += (clas_m * anchor)
 
-    print(f"\n⏱️ EXECUTION SPEED & TIMING METRICS")
-    print(f"  • Total Benchmark Time:           {int(t_elapsed_total//60)}m {int(t_elapsed_total%60):02d}s ({total_games} games)")
-    print(f"  • MuZero ({args.muzero_sims} sims):             {t_muzero:.4f} sec/move")
-    print(f"  • Classic MCTS Simulation Time:   {t_classic_sim*1000:.4f} ms/simulation")
-    print(f"  • Wall-Clock Crossover (N_time):  {crossover:.1f} classic simulations")
+                    optimizer.add_match_result(anchor, muz_w, games_played, "Fixed Anchors")
 
-    # Convergence & CSE Parity
-    cse = optimizer.n50
-    ci_low = optimizer.ci_lower
-    ci_high = optimizer.ci_upper
-    ci_ratio = optimizer.ci_ratio
+        # ── Final Summary Telemetry Report ──
+        t_elapsed_total = time.time() - t_start_all
+        print_final_telemetry_report(
+            optimizer=optimizer,
+            total_muzero_wins=total_muzero_wins,
+            total_games=total_games,
+            total_muzero_time=total_muzero_time,
+            total_muzero_moves=total_muzero_moves,
+            total_classic_time=total_classic_time,
+            total_classic_sims_completed=total_classic_sims_completed,
+            t_elapsed_total=t_elapsed_total,
+            muzero_sims=args.muzero_sims,
+            target_ci_ratio=args.target_ci_ratio,
+            baseline_log_n50=args.baseline_log_n50,
+            interrupted=False
+        )
 
-    print(f"\n🏆 MODEL EFFICIENCY & CONVERGENCE RESULTS")
-    print(f"  • Natural Log Parity (ln N_50):   {optimizer.x0:.4f} ± {optimizer.se_x0:.4f} (SE)")
-    print(f"  • SIMULATION CSE (N_50):          {cse:.1f}")
-    print(f"  • 95% Confidence Interval:        [{ci_low:.1f}, {ci_high:.1f}]")
-    print(f"  • 95% Parameter Uncertainty Ratio:{ci_ratio:.3f}x (Target: <={args.target_ci_ratio:.2f}x)")
-    
-    speedup = (cse * t_classic_sim) / max(1e-9, t_muzero)
-    print(f"  • REALIZED WALL-CLOCK SPEEDUP:    {speedup:.2f}x")
+    except KeyboardInterrupt:
+        print("\n\n⏹️ Evaluation interrupted by user (Ctrl+C). Printing partial results...")
+        t_elapsed_total = time.time() - t_start_all
+        print_final_telemetry_report(
+            optimizer=optimizer,
+            total_muzero_wins=total_muzero_wins,
+            total_games=total_games,
+            total_muzero_time=total_muzero_time,
+            total_muzero_moves=total_muzero_moves,
+            total_classic_time=total_classic_time,
+            total_classic_sims_completed=total_classic_sims_completed,
+            t_elapsed_total=t_elapsed_total,
+            muzero_sims=args.muzero_sims,
+            target_ci_ratio=args.target_ci_ratio,
+            baseline_log_n50=args.baseline_log_n50,
+            interrupted=True
+        )
 
-    # Diminishing Returns Index
-    if args.baseline_log_n50 is not None:
-        delta_ln_n50 = optimizer.x0 - args.baseline_log_n50
-        multiplier = math.exp(delta_ln_n50)
-        print(f"\n📈 MARGINAL RETURN & SEARCH EFFICIENCY GAIN")
-        print(f"  • Baseline ln(N_50):              {args.baseline_log_n50:.4f}")
-        print(f"  • Current ln(N_50):               {optimizer.x0:.4f}")
-        print(f"  • Delta ln(N_50):                 {delta_ln_n50:+.4f}")
-        print(f"  • Equivalence Scaling Multiplier: {multiplier:.2f}x over baseline")
-
-    print(f"========================================================================\n")
+    except Exception as exc:
+        dump_crash_telemetry(exc, optimizer=optimizer, extra_info=last_context_info)
+        t_elapsed_total = time.time() - t_start_all
+        if total_games > 0:
+            print("📊 Printing partial telemetry results from games completed prior to the exception:")
+            print_final_telemetry_report(
+                optimizer=optimizer,
+                total_muzero_wins=total_muzero_wins,
+                total_games=total_games,
+                total_muzero_time=total_muzero_time,
+                total_muzero_moves=total_muzero_moves,
+                total_classic_time=total_classic_time,
+                total_classic_sims_completed=total_classic_sims_completed,
+                t_elapsed_total=t_elapsed_total,
+                muzero_sims=args.muzero_sims,
+                target_ci_ratio=args.target_ci_ratio,
+                baseline_log_n50=args.baseline_log_n50,
+                interrupted=True
+            )
+        raise
 
 if __name__ == "__main__":
     asyncio.run(main())
+
 
