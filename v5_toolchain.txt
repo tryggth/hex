@@ -1828,6 +1828,7 @@ async def play_paired_match(
     latent_mcts_a = LatentMCTS(model=model)
     classic_mcts_a = ClassicMCTS()
     move_num = 0
+    game_a_num = total_games_all + 1
 
     while env_a.winner == 0:
         move_num += 1
@@ -1837,9 +1838,9 @@ async def play_paired_match(
 
         info = {
             "Phase": phase_str,
-            "Eval Step": f"{step_num} / {max_steps}",
+            "Eval Step": f"Step {step_num} / {max_steps} (2 games/step)",
             "Current Anchor": f"{classic_sims:,} Classic Sims",
-            "Match Game": f"1 / 2 (MuZero = Red)",
+            "Current Game": f"Game #{game_a_num} (Pair 1/2: MuZero=Red)",
             "Overall Score": f"MuZero {total_muzero_wins_all} - {total_games_all - total_muzero_wins_all} Classic",
             "95% CI Ratio": f"{optimizer.ci_ratio:.2f}x (Target: <={optimizer.target_ci_ratio:.2f}x)",
             "Dynamic ETA": f"{eta_str} (EMA: {ema_game_time:.1f}s/game)",
@@ -1878,6 +1879,7 @@ async def play_paired_match(
     latent_mcts_b = LatentMCTS(model=model)
     classic_mcts_b = ClassicMCTS()
     move_num = 0
+    game_b_num = total_games_all + 2
 
     while env_b.winner == 0:
         move_num += 1
@@ -1887,9 +1889,9 @@ async def play_paired_match(
 
         info = {
             "Phase": phase_str,
-            "Eval Step": f"{step_num} / {max_steps}",
+            "Eval Step": f"Step {step_num} / {max_steps} (2 games/step)",
             "Current Anchor": f"{classic_sims:,} Classic Sims",
-            "Match Game": f"2 / 2 (MuZero = Blue)",
+            "Current Game": f"Game #{game_b_num} (Pair 2/2: MuZero=Blue)",
             "Overall Score": f"MuZero {total_muzero_wins_all + muzero_wins} - {total_games_all + 1 - (total_muzero_wins_all + muzero_wins)} Classic",
             "95% CI Ratio": f"{optimizer.ci_ratio:.2f}x (Target: <={optimizer.target_ci_ratio:.2f}x)",
             "Dynamic ETA": f"{eta_str} (EMA: {ema_game_time:.1f}s/game)",
