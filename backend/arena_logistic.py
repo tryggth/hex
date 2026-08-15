@@ -248,6 +248,13 @@ def render_board_lines(env, board_size, extra_info):
     return lines
 
 
+import re
+
+def _visible_len(s: str) -> int:
+    """Computes visible length of string ignoring ANSI escape codes."""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return len(ansi_escape.sub('', s))
+
 def update_dashboard(optimizer: SequentialCSEOptimizer, current_env, board_size: int, extra_info: dict):
     plotext.clear_terminal()
 
@@ -281,7 +288,7 @@ def update_dashboard(optimizer: SequentialCSEOptimizer, current_env, board_size:
         plotext.title("Logistic Curve (Sampling...)")
 
     plotext.ylabel("Win Rate")
-    p1_lines = plotext.build().split("\n")
+    p1_lines = [l for l in plotext.build().split("\n") if l]
 
     # ── Plot 2: Real-time 95% CI Convergence Plot ──
     plotext.clf()
@@ -304,14 +311,16 @@ def update_dashboard(optimizer: SequentialCSEOptimizer, current_env, board_size:
         plotext.xlabel("Evaluation Step")
         plotext.ylabel("Sims")
 
-    p2_lines = plotext.build().split("\n")
+    p2_lines = [l for l in plotext.build().split("\n") if l]
     chart_lines = p1_lines + p2_lines
     board_lines = render_board_lines(current_env, board_size, extra_info)
 
     max_l = max(len(chart_lines), len(board_lines))
     output = []
     for i in range(max_l):
-        c_line = chart_lines[i] if i < len(chart_lines) else " " * 46
+        raw_c = chart_lines[i] if i < len(chart_lines) else ""
+        v_len = _visible_len(raw_c)
+        c_line = raw_c + (" " * max(0, 46 - v_len))
         b_line = board_lines[i] if i < len(board_lines) else ""
         output.append(f"{c_line} │ {b_line}")
 
