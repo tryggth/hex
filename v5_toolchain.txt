@@ -1,0 +1,2356 @@
+# V5 Toolchain Pack — 12 files
+# Unpack with: python pack_scripts.py unpack --input v5_toolchain.txt
+
+===== FILE: backend/hex_env.py =====
+import numpy as np
+
+HEX_DIRS = [[-1, 0], [-1, 1], [0, -1], [0, 1], [1, -1], [1, 0]]
+
+class UnionFind:
+    def __init__(self, size: int):
+        self.parent = list(range(size))
+        self.rank = [0] * size
+
+    def find(self, i: int) -> int:
+        root = i
+        while root != self.parent[root]:
+            root = self.parent[root]
+        curr = i
+        while curr != root:
+            nxt = self.parent[curr]
+            self.parent[curr] = root
+            curr = nxt
+        return root
+
+    def union(self, i: int, j: int):
+        root_i = self.find(i)
+        root_j = self.find(j)
+        if root_i != root_j:
+            if self.rank[root_i] < self.rank[root_j]:
+                self.parent[root_i] = root_j
+            elif self.rank[root_i] > self.rank[root_j]:
+                self.parent[root_j] = root_i
+            else:
+                self.parent[root_j] = root_i
+                self.rank[root_i] += 1
+
+class HexEnv:
+    def __init__(self, board_size: int = 7):
+        self.board_size = board_size
+        self.num_cells = board_size * board_size
+
+        # Sentinels
+        self.red_top = self.num_cells
+        self.red_bottom = self.num_cells + 1
+        self.blue_left = self.num_cells + 2
+        self.blue_right = self.num_cells + 3
+
+        self.reset()
+
+    def reset(self):
+        self.board = np.zeros(self.num_cells, dtype=np.uint8)
+        self.uf = UnionFind(self.num_cells + 4)
+        self.current_player = 1  # 1: Red (Top-to-Bottom), 2: Blue (Left-to-Right)
+        self.winner = 0
+        self.moves_made = 0
+        return self.get_observation()
+
+    def is_valid(self, r: int, c: int) -> bool:
+        return 0 <= r < self.board_size and 0 <= c < self.board_size
+
+    def coord_to_idx(self, r: int, c: int) -> int:
+        return r * self.board_size + c
+
+    def legal_actions(self) -> list:
+        return [i for i in range(self.num_cells) if self.board[i] == 0]
+
+    def step(self, action: int):
+        if self.board[action] != 0 or self.winner != 0:
+            raise ValueError(f"Invalid move index {action} on board state")
+
+        r = action // self.board_size
+        c = action % self.board_size
+        player = self.current_player
+
+        self.board[action] = player
+        self.moves_made += 1
+
+        # Connect to adjacent friendly stones
+        for dr, dc in HEX_DIRS:
+            nr, nc = r + dr, c + dc
+            if self.is_valid(nr, nc):
+                nidx = self.coord_to_idx(nr, nc)
+                if self.board[nidx] == player:
+                    self.uf.union(action, nidx)
+
+        # Connect border cells to sentinels
+        if player == 1:  # Red (Top-to-Bottom)
+            if r == 0:
+                self.uf.union(action, self.red_top)
+            if r == self.board_size - 1:
+                self.uf.union(action, self.red_bottom)
+        else:  # Blue (Left-to-Right)
+            if c == 0:
+                self.uf.union(action, self.blue_left)
+            if c == self.board_size - 1:
+                self.uf.union(action, self.blue_right)
+
+        # Check win conditions
+        reward = 0.0
+        done = False
+
+        if player == 1 and self.uf.find(self.red_top) == self.uf.find(self.red_bottom):
+            self.winner = 1
+            reward = 1.0
+            done = True
+        elif player == 2 and self.uf.find(self.blue_left) == self.uf.find(self.blue_right):
+            self.winner = 2
+            reward = 1.0
+            done = True
+        elif self.moves_made == self.num_cells:
+            done = True
+
+        # Swap player turn
+        self.current_player = 2 if self.current_player == 1 else 1
+
+        return self.get_observation(), reward, done
+
+    def get_observation(self, v5_features=False) -> np.ndarray:
+        if v5_features:
+            obs = np.zeros((5, self.board_size, self.board_size), dtype=np.float32)
+        else:
+            obs = np.zeros((3, self.board_size, self.board_size), dtype=np.float32)
+            
+        grid = self.board.reshape((self.board_size, self.board_size))
+
+        # Channel 0: Player 1 (Red) stones
+        obs[0] = (grid == 1).astype(np.float32)
+        # Channel 1: Player 2 (Blue) stones
+        obs[1] = (grid == 2).astype(np.float32)
+        # Channel 2: Current player turn (1.0 for P1, 0.0 for P2)
+        obs[2] = 1.0 if self.current_player == 1 else 0.0
+        
+        if v5_features:
+            # Channel 3: P1 Boundary (Row 0 and Row N-1 set to 1.0)
+            obs[3, 0, :] = 1.0
+            obs[3, self.board_size - 1, :] = 1.0
+            # Channel 4: P2 Boundary (Col 0 and Col N-1 set to 1.0)
+            obs[4, :, 0] = 1.0
+            obs[4, :, self.board_size - 1] = 1.0
+
+        return obs
+
+    def clone(self):
+        new_env = HexEnv(self.board_size)
+        new_env.board = self.board.copy()
+        
+        # Deep copy UnionFind
+        new_env.uf.parent = self.uf.parent.copy()
+        new_env.uf.rank = self.uf.rank.copy()
+        
+        new_env.current_player = self.current_player
+        new_env.winner = self.winner
+        new_env.moves_made = self.moves_made
+        return new_env
+===== FILE: backend/muzero_nets.py =====
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels: int):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, stride=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, stride=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out += residual
+        out = self.relu(out)
+        return out
+
+class RepresentationNetwork(nn.Module):
+    def __init__(self, board_size: int = 5, num_channels: int = 3, latent_channels: int = 32, num_res_blocks: int = 2):
+        super().__init__()
+        self.board_size = board_size
+        self.conv_init = nn.Conv2d(num_channels, latent_channels, kernel_size=3, padding=1, bias=False)
+        self.bn_init = nn.BatchNorm2d(latent_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.res_blocks = nn.ModuleList([ResidualBlock(latent_channels) for _ in range(num_res_blocks)])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        out = self.conv_init(x)
+        out = self.bn_init(out)
+        out = self.relu(out)
+        for block in self.res_blocks:
+            out = block(out)
+        # Bounded normalization to [0, 1] for latent stability
+        return torch.sigmoid(out)
+
+class DynamicsNetwork(nn.Module):
+    def __init__(self, board_size: int = 5, latent_channels: int = 32, action_space_size: int = 25, num_res_blocks: int = 2):
+        super().__init__()
+        self.board_size = board_size
+        self.action_space_size = action_space_size or (board_size * board_size)
+
+        # Main transition dynamics
+        self.conv_init = nn.Conv2d(latent_channels + 1, latent_channels, kernel_size=3, padding=1, bias=False)
+        self.bn_init = nn.BatchNorm2d(latent_channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.res_blocks = nn.ModuleList([ResidualBlock(latent_channels) for _ in range(num_res_blocks)])
+
+        # Reward head
+        self.reward_conv = nn.Conv2d(latent_channels, 1, kernel_size=1, bias=False)
+        self.reward_bn = nn.BatchNorm2d(1)
+        self.reward_fc1 = nn.Linear(board_size * board_size, 16)
+        self.reward_fc2 = nn.Linear(16, 1)
+
+    def encode_action_plane(self, action: torch.Tensor, batch_size: int, device: torch.device) -> torch.Tensor:
+        action_plane = torch.zeros((batch_size, 1, self.board_size, self.board_size), device=device, dtype=torch.float32)
+        for b in range(batch_size):
+            act = action[b].item()
+            if 0 <= act < self.board_size * self.board_size:
+                r = act // self.board_size
+                c = act % self.board_size
+                action_plane[b, 0, r, c] = 1.0
+        return action_plane
+
+    def forward(self, latent_state: torch.Tensor, action: torch.Tensor):
+        batch_size = latent_state.shape[0]
+        device = latent_state.device
+
+        # One-hot action spatial plane
+        action_plane = self.encode_action_plane(action, batch_size, device)
+
+        # Concatenate action plane with latent state along channel dimension
+        x = torch.cat([latent_state, action_plane], dim=1)
+
+        # Process through convolutional body
+        out = self.conv_init(x)
+        out = self.bn_init(out)
+        out = self.relu(out)
+        for block in self.res_blocks:
+            out = block(out)
+        next_latent_state = torch.sigmoid(out)
+
+        # Compute predicted scalar reward
+        rw = self.reward_conv(out)
+        rw = self.reward_bn(rw)
+        rw = self.relu(rw)
+        rw = torch.flatten(rw, start_dim=1)
+        rw = self.relu(self.reward_fc1(rw))
+        reward = self.reward_fc2(rw)
+
+        return next_latent_state, reward
+
+class PredictionNetwork(nn.Module):
+    def __init__(self, board_size: int = 5, latent_channels: int = 32, action_space_size: int = 25, use_fcn: bool = False):
+        super().__init__()
+        self.board_size = board_size
+        self.action_space_size = action_space_size or (board_size * board_size)
+        self.use_fcn = use_fcn
+
+        if self.use_fcn:
+            self.policy_conv = nn.Conv2d(latent_channels, 1, kernel_size=1)
+            self.value_conv = nn.Conv2d(latent_channels, 1, kernel_size=1)
+            self.value_pool = nn.AdaptiveAvgPool2d((1, 1))
+        else:
+            # Policy Head
+            self.policy_conv = nn.Conv2d(latent_channels, 2, kernel_size=1, bias=False)
+            self.policy_bn = nn.BatchNorm2d(2)
+            self.policy_relu = nn.ReLU(inplace=True)
+            self.policy_fc = nn.Linear(2 * board_size * board_size, self.action_space_size)
+    
+            # Value Head
+            self.value_conv = nn.Conv2d(latent_channels, 1, kernel_size=1, bias=False)
+            self.value_bn = nn.BatchNorm2d(1)
+            self.value_relu = nn.ReLU(inplace=True)
+            self.value_fc1 = nn.Linear(board_size * board_size, 32)
+            self.value_fc2 = nn.Linear(32, 1)
+
+    def forward(self, latent_state: torch.Tensor):
+        if self.use_fcn:
+            # Policy logits
+            p = self.policy_conv(latent_state)
+            policy_logits = torch.flatten(p, start_dim=1)
+            
+            # Value [-1, 1]
+            v = self.value_conv(latent_state)
+            v = self.value_pool(v)
+            v = torch.flatten(v, start_dim=1)
+            value = torch.tanh(v)
+        else:
+            # Policy logits
+            p = self.policy_conv(latent_state)
+            p = self.policy_bn(p)
+            p = self.policy_relu(p)
+            p = torch.flatten(p, start_dim=1)
+            policy_logits = self.policy_fc(p)
+    
+            # Value [-1, 1]
+            v = self.value_conv(latent_state)
+            v = self.value_bn(v)
+            v = self.value_relu(v)
+            v = torch.flatten(v, start_dim=1)
+            v = self.policy_relu(self.value_fc1(v))
+            value = torch.tanh(self.value_fc2(v))
+
+        return policy_logits, value
+
+
+class MuZeroModels(nn.Module):
+    def __init__(self, board_size: int = 5, action_space_size: int = 25, latent_channels: int = 32, num_res_blocks: int = 2, input_channels: int = 3, use_fcn: bool = False):
+        super().__init__()
+        self.board_size = board_size
+        self.action_space_size = action_space_size or (board_size * board_size)
+        self.use_fcn = use_fcn
+
+        self.representation = RepresentationNetwork(
+            board_size=board_size,
+            num_channels=input_channels,
+            latent_channels=latent_channels,
+            num_res_blocks=num_res_blocks
+        )
+        self.dynamics = DynamicsNetwork(
+            board_size=board_size,
+            latent_channels=latent_channels,
+            action_space_size=self.action_space_size,
+            num_res_blocks=num_res_blocks
+        )
+        self.prediction = PredictionNetwork(
+            board_size=board_size,
+            latent_channels=latent_channels,
+            action_space_size=self.action_space_size,
+            use_fcn=use_fcn
+        )
+
+    def initial_inference(self, observation: torch.Tensor):
+        latent_state = self.representation(observation)
+        policy_logits, value = self.prediction(latent_state)
+        reward = torch.zeros((observation.shape[0], 1), device=observation.device, dtype=observation.dtype)
+        return value, reward, policy_logits, latent_state
+
+    def recurrent_inference(self, latent_state: torch.Tensor, action: torch.Tensor):
+        next_latent_state, reward = self.dynamics(latent_state, action)
+        policy_logits, value = self.prediction(next_latent_state)
+        return value, reward, policy_logits, next_latent_state
+===== FILE: backend/latent_mcts.py =====
+import math
+import time
+import asyncio
+import torch
+import torch.nn as nn
+
+class Node:
+    def __init__(self, prior: float = 0.0, reward: float = 0.0, hidden_state: torch.Tensor = None, legal_actions: list = None):
+        self.visit_count = 0
+        self.value_sum = 0.0
+        self.prior = prior
+        self.reward = reward
+        self.hidden_state = hidden_state
+        self.children = {}  # dict mapping action (int) -> Node
+        self.legal_actions = legal_actions
+
+    def value(self) -> float:
+        if self.visit_count == 0:
+            return 0.0
+        return self.value_sum / self.visit_count
+
+class LatentMCTS:
+    def __init__(self, model: nn.Module, c_puct: float = 1.25):
+        self.model = model
+        self.c_puct = c_puct
+
+    def puct_score(self, parent_visit_count: int, child: Node) -> float:
+        q_value = child.value()
+        # PUCT formula: Q(s, a) + c_puct * P(s, a) * sqrt(N_parent) / (1 + N_child)
+        u_value = self.c_puct * child.prior * (math.sqrt(parent_visit_count) / (1 + child.visit_count))
+        return q_value + u_value
+
+    async def search(
+        self,
+        initial_state_tensor: torch.Tensor,
+        legal_actions: list,
+        num_simulations: int = 50,
+        websocket=None,
+        stop_event=None,
+        add_dirichlet_noise: bool = False,
+        dirichlet_alpha: float = 0.3,
+        dirichlet_fraction: float = 0.25,
+        time_limit_ms: int = None
+    ):
+        self.model.eval()
+        device = initial_state_tensor.device
+        board_size = initial_state_tensor.shape[-1]
+        action_space_size = board_size * board_size
+        start_time = time.time()
+
+        # 1. Initial Inference from Representation Network
+        with torch.no_grad():
+            init_val, init_rw, init_policy_logits, init_latent_state = self.model.initial_inference(initial_state_tensor)
+            priors = torch.softmax(init_policy_logits[0], dim=-1)
+
+        # Mask illegal actions and re-normalize priors
+        legal_priors = {}
+        total_p_sum = 0.0
+        for act in legal_actions:
+            p_val = priors[act].item() if act < len(priors) else 0.0
+            legal_priors[act] = p_val
+            total_p_sum += p_val
+
+        # Create Root Node
+        root = Node(prior=1.0, reward=0.0, hidden_state=init_latent_state, legal_actions=legal_actions)
+
+        for act in root.legal_actions:
+            norm_prior = (legal_priors[act] / total_p_sum) if total_p_sum > 0 else (1.0 / len(root.legal_actions))
+            root.children[act] = Node(prior=norm_prior, reward=0.0, hidden_state=None)
+
+        # Apply Dirichlet noise to root priors if requested (exploration enhancement)
+        if add_dirichlet_noise and len(root.children) > 0:
+            import numpy as np
+            noise = np.random.dirichlet([dirichlet_alpha] * len(root.children))
+            for idx, (act, child) in enumerate(root.children.items()):
+                child.prior = (1.0 - dirichlet_fraction) * child.prior + dirichlet_fraction * noise[idx]
+
+        # 2. Main MCTS Simulation Loop
+        for sim in range(num_simulations):
+            if stop_event and stop_event.is_set():
+                break
+
+            if time_limit_ms is not None and (time.time() - start_time) * 1000.0 >= time_limit_ms:
+                break
+
+            node = root
+            path = []
+
+            # --- SELECT ---
+            while len(node.children) > 0:
+                # Find unexpanded child or pick best via PUCT
+                unexpanded = [act for act, child in node.children.items() if child.hidden_state is None]
+                if unexpanded:
+                    # Pick first unexpanded child for evaluation
+                    action = unexpanded[0]
+                    path.append((node, action))
+                    node = node.children[action]
+                    break
+                else:
+                    # All children expanded, select child with max PUCT
+                    best_score = -float('inf')
+                    best_act = None
+                    for act, child in node.children.items():
+                        score = self.puct_score(node.visit_count, child)
+                        if score > best_score:
+                            best_score = score
+                            best_act = act
+
+                    if best_act is None:
+                        break
+
+                    path.append((node, best_act))
+                    node = node.children[best_act]
+
+            # --- EXPAND & EVALUATE ---
+            leaf_value = 0.0
+            if node.hidden_state is None and len(path) > 0:
+                parent_node, chosen_act = path[-1]
+                with torch.no_grad():
+                    action_tensor = torch.tensor([chosen_act], device=device, dtype=torch.long)
+                    rec_val, rec_rw, rec_pol_logits, next_latent = self.model.recurrent_inference(
+                        parent_node.hidden_state, action_tensor
+                    )
+                    rec_priors = torch.softmax(rec_pol_logits[0], dim=-1)
+
+                node.hidden_state = next_latent
+                node.reward = rec_rw.item()
+                leaf_value = rec_val.item()
+                node.legal_actions = [a for a in parent_node.legal_actions if a != chosen_act]
+
+                # Expand children for legal actions
+                for act in node.legal_actions:
+                    p_val = rec_priors[act].item() if act < len(rec_priors) else 0.0
+                    node.children[act] = Node(prior=p_val, reward=0.0, hidden_state=None)
+            else:
+                leaf_value = init_val.item()
+
+            # --- BACKPROPAGATE ---
+            # CRITICAL: Invert value at each step up the tree for alternating zero-sum games
+            value = leaf_value
+            for parent, act in reversed(path):
+                child_node = parent.children[act]
+                value = -value  # Pure alternating minimax inversion (ignore untrained reward)
+                child_node.visit_count += 1
+                child_node.value_sum += value
+
+            root.visit_count += 1
+
+            # --- WEBSOCKET STREAMING ---
+            if websocket and (sim + 1) % 10 == 0:
+                await asyncio.sleep(0.001)
+                visits_list = [
+                    {"move": act, "visits": child.visit_count}
+                    for act, child in root.children.items()
+                ]
+                try:
+                    await websocket.send_json({
+                        "type": "heatmap_update",
+                        "total_nodes": root.visit_count,
+                        "visits": visits_list
+                    })
+                except Exception:
+                    pass
+
+        return root
+===== FILE: backend/classic_mcts.py =====
+import math
+import random
+import numpy as np
+
+class Node:
+    def __init__(self, state, parent=None, action_taken=None):
+        self.state = state
+        self.parent = parent
+        self.action_taken = action_taken
+        self.children = {}
+        self.visit_count = 0
+        self.value_sum = 0.0
+        self.untried_actions = self.state.legal_actions()
+
+    def is_fully_expanded(self):
+        return len(self.untried_actions) == 0
+
+    def is_terminal(self):
+        return self.state.winner != 0
+
+class ClassicMCTS:
+    def __init__(self, c_puct=1.414):
+        self.c_puct = c_puct
+
+    def search(self, env_state, num_simulations, temperature=0.0):
+        root = Node(env_state.clone())
+
+        for _ in range(num_simulations):
+            node = root
+
+            # 1. Select
+            while node.is_fully_expanded() and not node.is_terminal():
+                best_score = -float('inf')
+                best_action = None
+                best_child = None
+                
+                for act, child in node.children.items():
+                    if child.visit_count == 0:
+                        score = float('inf')
+                    else:
+                        score = (child.value_sum / child.visit_count) + \
+                                self.c_puct * math.sqrt(math.log(node.visit_count) / child.visit_count)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_action = act
+                        best_child = child
+                
+                node = best_child
+
+            # 2. Expand
+            if not node.is_terminal():
+                action_idx = random.randint(0, len(node.untried_actions) - 1)
+                action = node.untried_actions.pop(action_idx)
+                
+                new_state = node.state.clone()
+                new_state.step(action)
+                
+                child_node = Node(new_state, parent=node, action_taken=action)
+                node.children[action] = child_node
+                node = child_node
+
+            # 3. Simulate
+            sim_state = node.state.clone()
+            while sim_state.winner == 0:
+                legal_moves = sim_state.legal_actions()
+                if not legal_moves:
+                    break
+                act = random.choice(legal_moves)
+                sim_state.step(act)
+                
+            player_who_just_moved = 3 - node.state.current_player
+            if sim_state.winner == player_who_just_moved:
+                reward = 1.0
+            elif sim_state.winner != 0:
+                reward = -1.0
+            else:
+                reward = 0.0
+
+            # 4. Backpropagate
+            curr = node
+            curr_reward = reward
+            while curr is not None:
+                curr.visit_count += 1
+                curr.value_sum += curr_reward
+                curr_reward = -curr_reward
+                curr = curr.parent
+
+        target_policy = np.zeros(env_state.num_cells, dtype=np.float32)
+        total_visits = sum(child.visit_count for child in root.children.values())
+        
+        if total_visits > 0:
+            for act, child in root.children.items():
+                target_policy[act] = child.visit_count / total_visits
+        else:
+            legal = env_state.legal_actions()
+            for act in legal:
+                target_policy[act] = 1.0 / len(legal)
+
+        actions = list(root.children.keys())
+        visits = np.array([root.children[a].visit_count for a in actions], dtype=np.float64)
+
+        if np.sum(visits) > 0:
+            if temperature > 0.0:
+                visits_norm = visits / np.max(visits)
+                visits_pow = visits_norm ** (1.0 / temperature)
+                probs = visits_pow / np.sum(visits_pow)
+                probs = probs / np.sum(probs)
+                best_action = np.random.choice(actions, p=probs)
+            else:
+                best_action = max(actions, key=lambda a: root.children[a].visit_count)
+        else:
+            legal = env_state.legal_actions()
+            best_action = random.choice(legal) if legal else None
+                
+        return best_action, target_policy
+===== FILE: backend/train.py =====
+import os
+import sys
+import random
+import argparse
+import asyncio
+from collections import deque
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from tqdm import tqdm
+
+from hex_env import HexEnv
+from muzero_nets import MuZeroModels
+from latent_mcts import LatentMCTS
+
+class ExperienceReplayBuffer:
+    """Experience Replay Buffer for storing and sampling full self-play games."""
+    def __init__(self, capacity: int = 2000):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, game_history: list):
+        self.buffer.append(game_history)
+
+    def sample(self, batch_size: int, num_unroll_steps: int = 5):
+        k = min(batch_size, len(self.buffer))
+        games = random.choices(self.buffer, k=k)
+
+        batch_obs = []
+        batch_actions = []
+        batch_policies = []
+        batch_values = []
+
+        for game in games:
+            start_idx = random.randint(0, len(game) - 1)
+            batch_obs.append(game[start_idx]["obs"])
+            
+            actions, policies, values = [], [], []
+            for i in range(num_unroll_steps + 1):
+                if start_idx + i < len(game):
+                    step = game[start_idx + i]
+                    actions.append(step["action"])
+                    policies.append(step["target_policy"])
+                    values.append(step["target_val"])
+                else:
+                    # Pad out of bounds
+                    actions.append(0)
+                    policies.append(np.zeros_like(game[0]["target_policy"]))
+                    values.append(0.0)
+
+            batch_actions.append(actions)
+            batch_policies.append(policies)
+            batch_values.append(values)
+
+        b_obs = torch.tensor(np.array(batch_obs), dtype=torch.float32)
+        b_actions = torch.tensor(np.array(batch_actions), dtype=torch.long)
+        b_policies = torch.tensor(np.array(batch_policies), dtype=torch.float32)
+        b_values = torch.tensor(np.array(batch_values), dtype=torch.float32)
+
+        return b_obs, b_actions, b_policies, b_values
+
+    def __len__(self) -> int:
+        return len(self.buffer)
+
+def train_self_play(args):
+    print(f"=== Starting Configurable MuZero Self-Play Training ===")
+    print(f"  Board Size:           {args.board_size}x{args.board_size}")
+    print(f"  Self-Play Games:      {args.num_games}")
+    print(f"  MCTS Sims / Move:     {args.sims_per_move}")
+    print(f"  Residual Blocks:      {args.num_blocks}")
+    print(f"  Latent Channels:      {args.latent_channels}")
+    print(f"  Learning Rate:        {args.lr}")
+    print(f"  Batch Size:           {args.batch_size}")
+    print(f"  Replay Capacity:      {args.buffer_capacity}")
+    print(f"  Temp Moves:           {args.temp_moves}")
+    print(f"  Epochs / Pass:        {args.epochs}")
+    print(f"  Checkpoint Interval:  {args.checkpoint_interval}")
+    print(f"  Output Directory:     {args.output_dir}\n")
+
+    action_space_size = args.board_size * args.board_size
+    env = HexEnv(board_size=args.board_size)
+    
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"  Compute Device:       {device}")
+
+    model = MuZeroModels(
+        board_size=args.board_size,
+        action_space_size=action_space_size,
+        latent_channels=args.latent_channels,
+        num_res_blocks=args.num_blocks,
+        input_channels=args.input_channels,
+        use_fcn=args.use_fcn
+    )
+    if args.load_weights:
+        model.load_state_dict(torch.load(args.load_weights, map_location=device), strict=False)
+        print(f"  Loaded weights from {args.load_weights}")
+
+    model.to(device)
+
+    if args.freeze_conv:
+        for param in model.representation.parameters():
+            param.requires_grad = False
+        for param in model.dynamics.parameters():
+            param.requires_grad = False
+        print("  Frozen representation and dynamics layers.")
+
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    replay_buffer = ExperienceReplayBuffer(capacity=args.buffer_capacity)
+
+    # Setup directories
+    if args.run_id:
+        output_dir = os.path.abspath(os.path.join(args.output_dir, "runs", args.run_id))
+    else:
+        output_dir = os.path.abspath(args.output_dir)
+    checkpoint_dir = os.path.join(output_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    print("--- Starting Self-Play & Neural Optimization Loop ---")
+    pbar = tqdm(range(args.num_games), desc="MuZero Training Loop", unit="game")
+    
+    latest_p_loss = 0.0
+    latest_v_loss = 0.0
+
+    for game_idx in pbar:
+        env.reset()
+        obs = env.get_observation(v5_features=(args.input_channels == 5))
+        game_history = []
+        game_history_sym = []
+        done = False
+        move_count = 0
+
+        while not done:
+            obs_tensor = torch.tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
+            legal = env.legal_actions()
+
+            mcts = LatentMCTS(model=model, c_puct=1.25)
+            root = asyncio.run(mcts.search(
+                obs_tensor,
+                legal,
+                num_simulations=args.sims_per_move,
+                add_dirichlet_noise=True,
+                dirichlet_alpha=0.3,
+                dirichlet_fraction=0.25
+            ))
+
+            # Build target policy vector from visit counts
+            target_policy = np.zeros(action_space_size, dtype=np.float32)
+            total_visits = sum(child.visit_count for child in root.children.values())
+
+            if total_visits > 0:
+                for act, child in root.children.items():
+                    target_policy[act] = child.visit_count / total_visits
+            else:
+                for act in legal:
+                    target_policy[act] = 1.0 / len(legal)
+
+            # Move-Based Temperature Decay:
+            # Moves 1-4 (move_count < 4): tau = 1.0 (exploration)
+            # Move 5+ (move_count >= 4): tau = 0.1 (sharp/deterministic)
+            tau = 1.0 if move_count < 4 else 0.1
+            actions = list(root.children.keys())
+            visits = np.array([root.children[a].visit_count for a in actions], dtype=np.float64)
+
+            if np.sum(visits) > 0:
+                visits_norm = visits / np.max(visits)
+                visits_pow = visits_norm ** (1.0 / tau)
+                probs = visits_pow / np.sum(visits_pow)
+                probs = probs / np.sum(probs)
+                chosen_action = np.random.choice(actions, p=probs)
+            else:
+                chosen_action = np.random.choice(legal)
+
+            # Record step
+            player_at_step = env.current_player
+            game_history.append({
+                "obs": obs,
+                "action": chosen_action,
+                "target_policy": target_policy,
+                "player": player_at_step
+            })
+
+            # Symmetry: 180-degree rotation
+            rot_obs = np.rot90(obs, k=2, axes=(1, 2)).copy()
+            rot_action = (args.board_size * args.board_size - 1) - chosen_action
+            rot_policy = target_policy[::-1].copy()
+
+            game_history_sym.append({
+                "obs": rot_obs,
+                "action": int(rot_action),
+                "target_policy": rot_policy,
+                "player": player_at_step
+            })
+
+            # Step Environment
+            _, reward, done = env.step(chosen_action)
+            obs = env.get_observation(v5_features=(args.input_channels == 5))
+            move_count += 1
+
+        winner = env.winner
+
+        # Push game transitions to Replay Buffer with target values
+        for sample, sample_sym in zip(game_history, game_history_sym):
+            val = 1.0 if sample["player"] == winner else -1.0
+            sample["target_val"] = val
+            sample_sym["target_val"] = val
+            
+        replay_buffer.push(game_history)
+        replay_buffer.push(game_history_sym)
+
+        # Progress bar will be updated at the end of the game loop
+
+        # Train model on sampled mini-batches from Replay Buffer using BPTT
+        if len(replay_buffer) >= max(1, args.batch_size // 40):
+            model.train()
+            for epoch in range(args.epochs):
+                b_obs, b_actions, b_policies, b_values = replay_buffer.sample(args.batch_size, num_unroll_steps=5)
+                b_obs = b_obs.to(device)
+                b_actions = b_actions.to(device)
+                b_policies = b_policies.to(device)
+                b_values = b_values.to(device)
+                val_pred, rw_pred, policy_logits, hidden_state = model.initial_inference(b_obs)
+
+                # Initial step loss
+                p_loss = -torch.mean(torch.sum(b_policies[:, 0] * torch.log_softmax(policy_logits, dim=-1), dim=-1))
+                v_loss = torch.mean((val_pred.squeeze(-1) - b_values[:, 0]) ** 2)
+                
+                latest_p_loss = p_loss.item()
+                latest_v_loss = v_loss.item()
+                
+                total_loss = p_loss + v_loss
+
+                # Unrolled steps loss for Dynamics Network (g_theta)
+                for i in range(1, 6):
+                    action_step = b_actions[:, i-1]
+                    val_pred, rw_pred, policy_logits, hidden_state = model.recurrent_inference(hidden_state, action_step)
+                    
+                    # Scale gradients for hidden state
+                    hidden_state.register_hook(lambda grad: grad * 0.5)
+                    
+                    # Compute masked loss to ignore padded steps
+                    mask = (torch.sum(b_policies[:, i], dim=-1) > 0).float()
+                    p_loss_step = -torch.mean(torch.sum(b_policies[:, i] * torch.log_softmax(policy_logits, dim=-1), dim=-1))
+                    v_loss_step = torch.mean(mask * (val_pred.squeeze(-1) - b_values[:, i]) ** 2)
+                    
+                    total_loss += p_loss_step + v_loss_step
+
+                optimizer.zero_grad()
+                total_loss.backward()
+                optimizer.step()
+
+        pbar.set_postfix({
+            "Moves": move_count,
+            "Buffer": len(replay_buffer),
+            "PLoss": f"{latest_p_loss:.3f}",
+            "VLoss": f"{latest_v_loss:.3f}"
+        })
+
+        # Save checkpoint every checkpoint_interval games
+        if (game_idx + 1) % args.checkpoint_interval == 0:
+            chk_path = os.path.join(checkpoint_dir, f"model_checkpoint_{game_idx + 1}.pth")
+            torch.save(model.state_dict(), chk_path)
+            tqdm.write(f"  💾 Saved checkpoint: {chk_path}")
+
+    # Save final model weights
+    save_path = os.path.join(output_dir, "model_weights.pth")
+    torch.save(model.state_dict(), save_path)
+    print(f"\n🏆 Training complete! Master weights saved to: {save_path}")
+    return replay_buffer
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="MuZero Self-Play Reinforcement Learning Trainer for Hex")
+    parser.add_argument("--board-size", type=int, default=7, help="Grid size of Hex board (default: 7)")
+    parser.add_argument("--num-games", type=int, default=300, help="Total self-play games (default: 300)")
+    parser.add_argument("--sims-per-move", type=int, default=400, help="MCTS simulations per move (default: 400)")
+    parser.add_argument("--num-blocks", type=int, default=8, help="Number of Residual Blocks in CNN (default: 8)")
+    parser.add_argument("--latent-channels", type=int, default=96, help="Latent feature channels (default: 96)")
+    parser.add_argument("--lr", type=float, default=1e-3, help="Optimizer learning rate (default: 0.001)")
+    parser.add_argument("--batch-size", type=int, default=64, help="Replay buffer mini-batch size (default: 64)")
+    parser.add_argument("--buffer-capacity", type=int, default=10000, help="Replay buffer capacity (default: 10000)")
+    parser.add_argument("--temp-moves", type=int, default=6, help="Temperature sampling moves at start (default: 6)")
+    parser.add_argument("--epochs", type=int, default=1, help="Epochs per game batch (default: 1)")
+    parser.add_argument("--checkpoint-interval", type=int, default=10, help="Game interval for checkpoints (default: 10)")
+    parser.add_argument("--output-dir", type=str, default="backend", help="Directory to save weights & checkpoints (default: backend)")
+    parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned checkpoints and weights")
+    parser.add_argument("--load-weights", type=str, default=None, help="Path to weights to load before training")
+    parser.add_argument("--freeze-conv", action="store_true", help="Freeze representation and dynamics layers")
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
+    return parser.parse_args()
+
+if __name__ == "__main__":
+    cli_args = parse_args()
+    train_self_play(cli_args)
+===== FILE: backend/train_supervised.py =====
+import os
+import sys
+import argparse
+import pickle
+import random
+from collections import deque
+import numpy as np
+import torch
+import torch.optim as optim
+from tqdm import tqdm
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from muzero_nets import MuZeroModels
+
+class ExperienceReplayBuffer:
+    """Experience Replay Buffer for storing and sampling full self-play games."""
+    def __init__(self, capacity: int = 200000):
+        self.buffer = deque(maxlen=capacity)
+
+    def push(self, game_history: list):
+        self.buffer.append(game_history)
+
+    def sample(self, batch_size: int, num_unroll_steps: int = 5):
+        k = min(batch_size, len(self.buffer))
+        games = random.choices(self.buffer, k=k)
+
+        batch_obs = []
+        batch_actions = []
+        batch_policies = []
+        batch_values = []
+
+        for game in games:
+            start_idx = random.randint(0, len(game) - 1)
+            batch_obs.append(game[start_idx]["obs"])
+            
+            actions, policies, values = [], [], []
+            for i in range(num_unroll_steps + 1):
+                if start_idx + i < len(game):
+                    step = game[start_idx + i]
+                    actions.append(step["action"])
+                    policies.append(step["target_policy"])
+                    values.append(step["target_val"])
+                else:
+                    # Pad out of bounds
+                    actions.append(0)
+                    policies.append(np.zeros_like(game[0]["target_policy"]))
+                    values.append(0.0)
+
+            batch_actions.append(actions)
+            batch_policies.append(policies)
+            batch_values.append(values)
+
+        b_obs = torch.tensor(np.array(batch_obs), dtype=torch.float32)
+        b_actions = torch.tensor(np.array(batch_actions), dtype=torch.long)
+        b_policies = torch.tensor(np.array(batch_policies), dtype=torch.float32)
+        b_values = torch.tensor(np.array(batch_values), dtype=torch.float32)
+
+        return b_obs, b_actions, b_policies, b_values
+
+    def __len__(self) -> int:
+        return len(self.buffer)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--board-size", type=int, default=7)
+    parser.add_argument("--dataset", type=str, default="backend/expert_data.pkl")
+    parser.add_argument("--num-blocks", type=int, default=8)
+    parser.add_argument("--latent-channels", type=int, default=96)
+    parser.add_argument("--epochs", type=int, default=10)
+    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--run-id", type=str, default="v4_clone")
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
+    args = parser.parse_args()
+
+    print(f"Loading dataset from {args.dataset}...")
+    with open(args.dataset, "rb") as f:
+        all_trajectories = pickle.load(f)
+        
+    replay_buffer = ExperienceReplayBuffer(capacity=len(all_trajectories) + 10)
+    for traj in all_trajectories:
+        replay_buffer.push(traj)
+        
+    print(f"Loaded {len(replay_buffer)} trajectories.")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    model = MuZeroModels(
+        board_size=args.board_size,
+        action_space_size=args.board_size ** 2,
+        latent_channels=args.latent_channels,
+        num_res_blocks=args.num_blocks,
+        input_channels=args.input_channels,
+        use_fcn=args.use_fcn
+    ).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+
+    steps_per_epoch = max(1, len(replay_buffer) * 20 // args.batch_size)
+    
+    run_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "runs", args.run_id)
+    checkpoint_dir = os.path.join(run_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+
+    model.train()
+    
+    for epoch in range(1, args.epochs + 1):
+        pbar = tqdm(range(steps_per_epoch), desc=f"Epoch {epoch}/{args.epochs}")
+        
+        for step in pbar:
+            b_obs, b_actions, b_policies, b_values = replay_buffer.sample(args.batch_size, num_unroll_steps=5)
+            b_obs = b_obs.to(device)
+            b_actions = b_actions.to(device)
+            b_policies = b_policies.to(device)
+            b_values = b_values.to(device)
+            val_pred, rw_pred, policy_logits, hidden_state = model.initial_inference(b_obs)
+
+            # Initial step loss
+            p_loss = -torch.mean(torch.sum(b_policies[:, 0] * torch.log_softmax(policy_logits, dim=-1), dim=-1))
+            v_loss = torch.mean((val_pred.squeeze(-1) - b_values[:, 0]) ** 2)
+            
+            latest_p_loss = p_loss.item()
+            latest_v_loss = v_loss.item()
+            
+            total_loss = p_loss + v_loss
+
+            # Unrolled steps loss for Dynamics Network (g_theta)
+            for i in range(1, 6):
+                action_step = b_actions[:, i-1]
+                val_pred, rw_pred, policy_logits, hidden_state = model.recurrent_inference(hidden_state, action_step)
+                
+                # Scale gradients for hidden state
+                hidden_state.register_hook(lambda grad: grad * 0.5)
+                
+                # Compute masked loss to ignore padded steps
+                mask = (torch.sum(b_policies[:, i], dim=-1) > 0).float()
+                p_loss_step = -torch.mean(torch.sum(b_policies[:, i] * torch.log_softmax(policy_logits, dim=-1), dim=-1))
+                v_loss_step = torch.mean(mask * (val_pred.squeeze(-1) - b_values[:, i]) ** 2)
+                
+                total_loss += p_loss_step + v_loss_step
+
+            optimizer.zero_grad()
+            total_loss.backward()
+            optimizer.step()
+            
+            pbar.set_postfix({"PLoss": f"{latest_p_loss:.3f}", "VLoss": f"{latest_v_loss:.3f}"})
+            
+        chk_path = os.path.join(checkpoint_dir, f"model_checkpoint_{epoch}.pth")
+        torch.save(model.state_dict(), chk_path)
+        
+    save_path = os.path.join(run_dir, "model_weights.pth")
+    torch.save(model.state_dict(), save_path)
+    print(f"🏆 Supervised Training complete! Master weights saved to: {save_path}")
+
+if __name__ == "__main__":
+    main()
+===== FILE: backend/generate_expert_data.py =====
+import argparse
+import os
+import sys
+import pickle
+import numpy as np
+import multiprocessing
+from tqdm import tqdm
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hex_env import HexEnv
+from classic_mcts import ClassicMCTS
+
+def generate_game(args):
+    board_size, sims_per_move, temp_moves = args
+    env = HexEnv(board_size=board_size)
+    mcts = ClassicMCTS()
+    
+    trajectory = []
+    
+    while env.winner == 0:
+        if not env.legal_actions():
+            break
+            
+        move_count = env.moves_made
+        temp = 1.0 if move_count < temp_moves else 0.0
+        
+        obs = env.get_observation()
+        player = env.current_player
+        
+        act, pol = mcts.search(env, num_simulations=sims_per_move, temperature=temp)
+        
+        trajectory.append({
+            "obs": obs.copy(),
+            "action": act,
+            "target_policy": pol.copy(),
+            "player": player
+        })
+        
+        env.step(act)
+        
+    winner = env.winner
+    
+    # Assign target values and build augmented trajectory
+    aug_trajectory = []
+    for step in trajectory:
+        val = 1.0 if step["player"] == winner else -1.0
+        step["target_val"] = val
+        
+        rot_obs = np.rot90(step["obs"], k=2, axes=(1, 2)).copy()
+        rot_act = (board_size * board_size - 1) - step["action"]
+        rot_pol = step["target_policy"][::-1].copy()
+        
+        aug_trajectory.append({
+            "obs": rot_obs,
+            "action": int(rot_act),
+            "target_policy": rot_pol,
+            "player": step["player"],
+            "target_val": val
+        })
+        
+    return [trajectory, aug_trajectory]
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--board-size", type=int, default=7)
+    parser.add_argument("--num-games", type=int, default=500)
+    parser.add_argument("--sims-per-move", type=int, default=1000)
+    parser.add_argument("--temp-moves", type=int, default=6)
+    parser.add_argument("--workers", type=int, default=multiprocessing.cpu_count())
+    parser.add_argument("--output", type=str, default="backend/expert_data.pkl")
+    args = parser.parse_args()
+    
+    print(f"Generating {args.num_games} expert games using {args.workers} workers...")
+    
+    worker_args = [(args.board_size, args.sims_per_move, args.temp_moves) for _ in range(args.num_games)]
+    all_trajectories = []
+    
+    with multiprocessing.Pool(args.workers) as pool:
+        for result in tqdm(pool.imap_unordered(generate_game, worker_args), total=args.num_games):
+            all_trajectories.extend(result)
+            
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    with open(args.output, "wb") as f:
+        pickle.dump(all_trajectories, f)
+        
+    print(f"Saved {len(all_trajectories)} augmented trajectories to {args.output}")
+
+if __name__ == "__main__":
+    main()
+===== FILE: backend/generate_muzero_data.py =====
+import argparse
+import asyncio
+import os
+import sys
+import pickle
+import time
+import numpy as np
+import multiprocessing
+import torch
+from tqdm import tqdm
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from hex_env import HexEnv
+from muzero_nets import MuZeroModels
+from latent_mcts import LatentMCTS
+
+def generate_single_game(args):
+    """Generate a single game. Returns [trajectory, aug_trajectory]."""
+    board_size, sims_per_move, temp_moves, run_id = args
+    
+    # Load Model
+    device = torch.device("cpu")
+    weights_path = os.path.join(os.path.dirname(__file__), "runs", run_id, "model_weights.pth")
+    if not os.path.exists(weights_path):
+        raise FileNotFoundError(f"No weights found at {weights_path}")
+        
+    model = MuZeroModels(
+        board_size=board_size,
+        action_space_size=board_size * board_size,
+        latent_channels=96,
+        num_res_blocks=8,
+        input_channels=3,
+        use_fcn=False
+    )
+    model.load_state_dict(torch.load(weights_path, map_location=device))
+    model.eval()
+
+    async def run_game():
+        env = HexEnv(board_size=board_size)
+        mcts = LatentMCTS(model=model)
+        trajectory = []
+        
+        while env.winner == 0:
+            legal = env.legal_actions()
+            if not legal:
+                break
+                
+            move_count = env.moves_made
+            temp = 1.0 if move_count < temp_moves else 0.0
+            
+            # Use 3-channel obs for MCTS to act
+            obs_3c = env.get_observation(v5_features=False)
+            obs_tensor = torch.tensor(obs_3c, dtype=torch.float32).unsqueeze(0)
+            
+            # CRITICAL: add dirichlet noise to root
+            root = await mcts.search(
+                initial_state_tensor=obs_tensor,
+                legal_actions=legal,
+                num_simulations=sims_per_move,
+                add_dirichlet_noise=True
+            )
+            
+            actions = list(root.children.keys())
+            visits = np.array([root.children[a].visit_count for a in actions], dtype=np.float64)
+            
+            target_policy = np.zeros(board_size * board_size, dtype=np.float32)
+            total_visits = np.sum(visits)
+            if total_visits > 0:
+                for act, child in root.children.items():
+                    target_policy[act] = child.visit_count / total_visits
+            else:
+                for act in legal:
+                    target_policy[act] = 1.0 / len(legal)
+                    
+            if total_visits > 0:
+                if temp > 0.0:
+                    visits_norm = visits / np.max(visits)
+                    visits_pow = visits_norm ** (1.0 / temp)
+                    probs = visits_pow / np.sum(visits_pow)
+                    probs = probs / np.sum(probs)
+                    best_action = np.random.choice(actions, p=probs)
+                else:
+                    best_action = max(actions, key=lambda a: root.children[a].visit_count)
+            else:
+                best_action = np.random.choice(legal)
+                
+            # CRITICAL: Save 5-channel V5 observation
+            obs_5c = env.get_observation(v5_features=True).copy()
+            player = env.current_player
+            
+            trajectory.append({
+                "obs": obs_5c,
+                "action": int(best_action),
+                "target_policy": target_policy,
+                "player": player
+            })
+            
+            env.step(best_action)
+            
+        winner = env.winner
+        aug_trajectory = []
+        for step in trajectory:
+            val = 1.0 if step["player"] == winner else -1.0
+            step["target_val"] = val
+            
+            # 180-degree symmetry
+            rot_obs = np.rot90(step["obs"], k=2, axes=(1, 2)).copy()
+            rot_act = (board_size * board_size - 1) - step["action"]
+            rot_pol = step["target_policy"][::-1].copy()
+            
+            aug_trajectory.append({
+                "obs": rot_obs,
+                "action": int(rot_act),
+                "target_policy": rot_pol,
+                "player": step["player"],
+                "target_val": val
+            })
+            
+        return [trajectory, aug_trajectory]
+
+    return asyncio.run(run_game())
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--run-id", type=str, required=True, help="V4 run ID to load weights from")
+    parser.add_argument("--board-size", type=int, default=7)
+    parser.add_argument("--num-games", type=int, default=500)
+    parser.add_argument("--sims-per-move", type=int, default=400)
+    parser.add_argument("--temp-moves", type=int, default=6)
+    parser.add_argument("--output", type=str, default="backend/expert_data_v5_7x7.pkl")
+    parser.add_argument("--workers", type=int, default=1)
+    args = parser.parse_args()
+    
+    print(f"Generating {args.num_games} MuZero games using {args.workers} workers...")
+    
+    game_args = [
+        (args.board_size, args.sims_per_move, args.temp_moves, args.run_id) 
+        for _ in range(args.num_games)
+    ]
+    
+    all_trajectories = []
+    if args.workers == 1:
+        # Single worker: load model once, generate games sequentially
+        device = torch.device("cpu")
+        weights_path = os.path.join(os.path.dirname(__file__), "runs", args.run_id, "model_weights.pth")
+        model = MuZeroModels(
+            board_size=args.board_size,
+            action_space_size=args.board_size * args.board_size,
+            latent_channels=96,
+            num_res_blocks=8,
+            input_channels=3,
+            use_fcn=False
+        )
+        model.load_state_dict(torch.load(weights_path, map_location=device))
+        model.eval()
+
+        async def run_single_game(env_board_size, sims, temp_mv):
+            env = HexEnv(board_size=env_board_size)
+            mcts = LatentMCTS(model=model)
+            trajectory = []
+            while env.winner == 0:
+                legal = env.legal_actions()
+                if not legal:
+                    break
+                move_count = env.moves_made
+                temp = 1.0 if move_count < temp_mv else 0.0
+                obs_3c = env.get_observation(v5_features=False)
+                obs_tensor = torch.tensor(obs_3c, dtype=torch.float32).unsqueeze(0)
+                root = await mcts.search(
+                    initial_state_tensor=obs_tensor,
+                    legal_actions=legal,
+                    num_simulations=sims,
+                    add_dirichlet_noise=True
+                )
+                actions = list(root.children.keys())
+                visits = np.array([root.children[a].visit_count for a in actions], dtype=np.float64)
+                target_policy = np.zeros(env_board_size * env_board_size, dtype=np.float32)
+                total_visits = np.sum(visits)
+                if total_visits > 0:
+                    for act, child in root.children.items():
+                        target_policy[act] = child.visit_count / total_visits
+                else:
+                    for act in legal:
+                        target_policy[act] = 1.0 / len(legal)
+                if total_visits > 0:
+                    if temp > 0.0:
+                        visits_norm = visits / np.max(visits)
+                        visits_pow = visits_norm ** (1.0 / temp)
+                        probs = visits_pow / np.sum(visits_pow)
+                        probs = probs / np.sum(probs)
+                        best_action = np.random.choice(actions, p=probs)
+                    else:
+                        best_action = max(actions, key=lambda a: root.children[a].visit_count)
+                else:
+                    best_action = np.random.choice(legal)
+                obs_5c = env.get_observation(v5_features=True).copy()
+                player = env.current_player
+                trajectory.append({
+                    "obs": obs_5c, "action": int(best_action),
+                    "target_policy": target_policy, "player": player
+                })
+                env.step(best_action)
+            winner = env.winner
+            aug_trajectory = []
+            for step in trajectory:
+                val = 1.0 if step["player"] == winner else -1.0
+                step["target_val"] = val
+                rot_obs = np.rot90(step["obs"], k=2, axes=(1, 2)).copy()
+                rot_act = (env_board_size * env_board_size - 1) - step["action"]
+                rot_pol = step["target_policy"][::-1].copy()
+                aug_trajectory.append({
+                    "obs": rot_obs, "action": int(rot_act),
+                    "target_policy": rot_pol, "player": step["player"], "target_val": val
+                })
+            return [trajectory, aug_trajectory]
+
+        pbar = tqdm(range(args.num_games), desc="Generating games", unit="game")
+        for game_idx in pbar:
+            t0 = time.time()
+            trajs = asyncio.run(run_single_game(args.board_size, args.sims_per_move, args.temp_moves))
+            t1 = time.time()
+            all_trajectories.extend(trajs)
+            pbar.set_postfix({"sec/game": f"{t1-t0:.1f}", "trajs": len(all_trajectories)})
+    else:
+        with multiprocessing.Pool(args.workers) as pool:
+            pbar = tqdm(total=args.num_games, desc="Generating games", unit="game")
+            for result in pool.imap_unordered(generate_single_game, game_args):
+                all_trajectories.extend(result)
+                pbar.update(1)
+            pbar.close()
+            
+    os.makedirs(os.path.dirname(os.path.abspath(args.output)), exist_ok=True)
+    with open(args.output, "wb") as f:
+        pickle.dump(all_trajectories, f)
+        
+    print(f"Saved {len(all_trajectories)} augmented trajectories to {args.output}")
+
+if __name__ == "__main__":
+    main()
+===== FILE: backend/transplant.py =====
+import argparse
+import torch
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from muzero_nets import MuZeroModels
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--source", type=str, required=True)
+    parser.add_argument("--target-board", type=int, default=7)
+    parser.add_argument("--latent-channels", type=int, default=96)
+    parser.add_argument("--num-blocks", type=int, default=8)
+    parser.add_argument("--output", type=str, default="backend/transplanted_weights.pth")
+    args = parser.parse_args()
+
+    source_state_dict = torch.load(args.source, map_location="cpu")
+    
+    target_action_space = args.target_board ** 2
+    target_model = MuZeroModels(
+        board_size=args.target_board,
+        action_space_size=target_action_space,
+        latent_channels=args.latent_channels,
+        num_res_blocks=args.num_blocks
+    )
+    
+    target_state_dict = target_model.state_dict()
+    
+    copied = 0
+    skipped = []
+    
+    for key in target_state_dict.keys():
+        if key in source_state_dict:
+            if target_state_dict[key].shape == source_state_dict[key].shape:
+                target_state_dict[key] = source_state_dict[key]
+                copied += 1
+            else:
+                skipped.append(key)
+        else:
+            skipped.append(key)
+            
+    print(f"Copied {copied} tensors. Skipped {len(skipped)} tensors due to shape mismatch.")
+    if skipped:
+        print("Skipped keys:")
+        for k in skipped:
+            print(f"  - {k}")
+            
+    out_dir = os.path.dirname(os.path.abspath(args.output))
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+    torch.save(target_state_dict, args.output)
+
+if __name__ == "__main__":
+    main()
+===== FILE: backend/arena_logistic.py =====
+import argparse
+import asyncio
+import os
+import math
+import time
+import numpy as np
+import torch
+import plotext
+from scipy.optimize import minimize
+from backend.hex_env import HexEnv
+from backend.muzero_nets import MuZeroModels
+from backend.latent_mcts import LatentMCTS
+from backend.classic_mcts import ClassicMCTS
+
+class SequentialCSEOptimizer:
+    """
+    Active Sequential Experiment Design engine for Simulation Compute-Scale Equivalence (N_50).
+    Uses Binomial Maximum Likelihood Estimation (GLM Logit Link) combined with Fisher Information-driven
+    c- and D-optimal anchor placement and Delta Method variance estimation.
+    """
+    def __init__(self, start_sims: int = 5000, min_sims: int = 500, max_sims: int = 150000, target_ci_ratio: float = 1.30):
+        self.start_sims = start_sims
+        self.min_sims = min_sims
+        self.max_sims = max_sims
+        self.target_ci_ratio = target_ci_ratio
+
+        # Aggregated anchor data: {sims: {"games": int, "wins": int}}
+        self.anchor_data = {}
+
+        # History of sequential match evaluations
+        self.match_history = []
+
+        # Trajectory of parameter estimates over steps
+        self.step_history = []
+        self.n50_history = []
+        self.ci_lower_history = []
+        self.ci_upper_history = []
+        self.ci_ratio_history = []
+
+        # Current GLM parameters
+        self.beta0 = 0.0
+        self.beta1 = -1.0
+        self.x0 = math.log(start_sims)
+        self.n50 = float(start_sims)
+        self.se_x0 = 1.0
+        self.ci_lower = self.n50 * 0.3
+        self.ci_upper = self.n50 * 3.0
+        self.ci_ratio = 10.0
+        self.converged = False
+
+        # Phase tracking
+        self.is_bracketed = False
+        self.fisher_cycle_idx = 0
+        self.current_sims = start_sims
+
+    def add_match_result(self, sims: int, wins: int, games: int, phase_name: str):
+        if sims not in self.anchor_data:
+            self.anchor_data[sims] = {"games": 0, "wins": 0}
+        self.anchor_data[sims]["games"] += games
+        self.anchor_data[sims]["wins"] += wins
+
+        step = len(self.match_history) + 1
+        self.match_history.append({
+            "step": step,
+            "phase": phase_name,
+            "anchor": sims,
+            "wins": wins,
+            "losses": games - wins,
+            "games": games,
+            "win_rate": wins / max(1, games)
+        })
+
+        # Check empirical bracketing across parity: win rates > 0.60 and < 0.40
+        anchor_rates = [d["wins"] / max(1, d["games"]) for d in self.anchor_data.values()]
+        has_high = any(r > 0.60 for r in anchor_rates)
+        has_low = any(r < 0.40 for r in anchor_rates)
+        self.is_bracketed = (has_high and has_low)
+
+        # Fit Binomial GLM
+        self.fit_glm()
+
+        # Record trajectory
+        if self.n50 is not None and self.ci_lower is not None and self.ci_upper is not None:
+            self.step_history.append(step)
+            self.n50_history.append(self.n50)
+            self.ci_lower_history.append(self.ci_lower)
+            self.ci_upper_history.append(self.ci_upper)
+            self.ci_ratio_history.append(self.ci_ratio)
+
+            total_games_played = sum(d["games"] for d in self.anchor_data.values())
+            if total_games_played >= 12 and self.ci_ratio <= self.target_ci_ratio and self.is_bracketed:
+                self.converged = True
+
+    def fit_glm(self):
+        unique_anchors = sorted(self.anchor_data.keys())
+        if len(unique_anchors) == 0:
+            return
+
+        x_arr = np.array([math.log(s) for s in unique_anchors], dtype=float)
+        n_arr = np.array([self.anchor_data[s]["games"] for s in unique_anchors], dtype=float)
+        k_arr = np.array([self.anchor_data[s]["wins"] for s in unique_anchors], dtype=float)
+
+        if len(unique_anchors) < 2:
+            sim = unique_anchors[0]
+            self.n50 = float(sim)
+            self.x0 = math.log(self.n50)
+            self.ci_lower = self.n50 * 0.4
+            self.ci_upper = self.n50 * 2.5
+            self.ci_ratio = self.ci_upper / max(1e-9, self.ci_lower)
+            self.se_x0 = 0.5
+            return
+
+        # Negative log-likelihood with mild L2 regularization to prevent complete separation
+        def neg_log_lik(beta):
+            b0, b1 = beta
+            eta = np.clip(b0 + b1 * x_arr, -30, 30)
+            p = 1.0 / (1.0 + np.exp(-eta))
+            eps = 1e-12
+            ll = np.sum(k_arr * np.log(p + eps) + (n_arr - k_arr) * np.log(1.0 - p + eps))
+            reg = 1e-4 * (b0**2 + (b1 + 1.0)**2)
+            return -(ll - reg)
+
+        init_b1 = -1.0
+        init_b0 = -init_b1 * float(np.mean(x_arr))
+        res = minimize(neg_log_lik, [init_b0, init_b1], method='L-BFGS-B')
+        b0, b1 = res.x
+
+        if b1 >= -1e-4:
+            b1 = -1e-4
+
+        self.beta0 = float(b0)
+        self.beta1 = float(b1)
+
+        # Fisher Information Matrix & Delta Method Variance
+        eta = np.clip(b0 + b1 * x_arr, -30, 30)
+        p = 1.0 / (1.0 + np.exp(-eta))
+        w = n_arr * p * (1.0 - p)
+
+        X = np.column_stack([np.ones_like(x_arr), x_arr])
+        I = X.T @ (w[:, None] * X) + 1e-4 * np.eye(2)
+        try:
+            cov = np.linalg.inv(I)
+        except np.linalg.LinAlgError:
+            cov = np.eye(2) * 10.0
+
+        x0 = -b0 / b1
+        grad_g = np.array([-1.0 / b1, b0 / (b1 ** 2)])
+        var_x0 = float(grad_g.T @ cov @ grad_g)
+        se_x0 = float(np.sqrt(max(1e-9, var_x0)))
+
+        self.x0 = float(x0)
+        self.n50 = float(np.exp(np.clip(x0, math.log(self.min_sims * 0.1), math.log(self.max_sims * 10.0))))
+        self.se_x0 = se_x0
+        self.ci_lower = float(np.exp(x0 - 1.96 * se_x0))
+        self.ci_upper = float(np.exp(x0 + 1.96 * se_x0))
+        self.ci_ratio = float(self.ci_upper / max(1e-9, self.ci_lower))
+
+    def get_next_anchor(self):
+        # 1. Seed / Hunt Phase: Not yet bracketed on both sides (p < 0.40 and p > 0.60)
+        if not self.is_bracketed:
+            phase_name = "Seed/Hunt"
+            if len(self.match_history) == 0:
+                self.current_sims = self.start_sims
+            else:
+                last_match = self.match_history[-1]
+                last_wr = last_match["win_rate"]
+                if last_wr >= 0.50:
+                    next_s = min(self.max_sims, int(self.current_sims * 2.0))
+                else:
+                    next_s = max(self.min_sims, int(self.current_sims * 0.5))
+                self.current_sims = next_s
+            return self.current_sims, phase_name
+
+        # 2. Convergence Phase: Online Fisher Information sampling targeting c- and D-optimal points
+        phase_name = "Convergence (D-Optimal)"
+        delta_x = min(1.543 / max(1e-4, abs(self.beta1)), 1.2)
+
+        cycle = self.fisher_cycle_idx % 4
+        self.fisher_cycle_idx += 1
+
+        if cycle == 0 or cycle == 2:
+            target_x = self.x0
+        elif cycle == 1:
+            target_x = self.x0 - delta_x
+        else:
+            target_x = self.x0 + delta_x
+
+        next_sims = int(round(math.exp(target_x)))
+        next_sims = max(self.min_sims, min(self.max_sims, next_sims))
+        self.current_sims = next_sims
+        return self.current_sims, phase_name
+
+    def project_remaining_time(self, ema_game_time: float, current_step: int, max_steps: int) -> tuple:
+        """
+        Projects remaining games and estimated time to hit target CI precision based on variance convergence rate.
+        """
+        total_games_played = sum(d["games"] for d in self.anchor_data.values())
+        if not self.is_bracketed or self.ci_ratio >= 10.0 or total_games_played == 0:
+            rem_steps = max(0, max_steps - current_step)
+            rem_games = rem_steps * 2
+            rem_sec = rem_games * ema_game_time
+            return rem_games, rem_sec
+
+        target_se = math.log(self.target_ci_ratio) / 3.92
+        if self.se_x0 <= target_se:
+            return 0, 0.0
+
+        # Variance scales inversely with sample size: se proportional to 1/sqrt(G)
+        req_games = total_games_played * ((self.se_x0 / max(1e-6, target_se)) ** 2)
+        rem_games = max(0, int(math.ceil(req_games - total_games_played)))
+        max_possible_rem_games = max(0, (max_steps - current_step) * 2)
+        rem_games = min(rem_games, max_possible_rem_games)
+        rem_sec = rem_games * ema_game_time
+        return rem_games, rem_sec
+
+
+def render_board_lines(env, board_size, extra_info):
+    lines = []
+    lines.append("┌────────── REALTIME GAME STATUS ──────────┐")
+    for k, v in extra_info.items():
+        lines.append(f" {k:<15}: {v}")
+    lines.append("───────────────────────────────────────────")
+    lines.append(" LIVE BOARD STATE:")
+
+    header = "    " + " ".join(str(c) for c in range(board_size))
+    lines.append(header)
+
+    for r in range(board_size):
+        indent = " " * (r + 1)
+        row_symbols = []
+        for c in range(board_size):
+            val = env.board[r * board_size + c]
+            if val == 1:
+                row_symbols.append("\033[91mR\033[0m")
+            elif val == 2:
+                row_symbols.append("\033[94mB\033[0m")
+            elif r == 0 or r == board_size - 1:
+                row_symbols.append("\033[91m.\033[0m")
+            elif c == 0 or c == board_size - 1:
+                row_symbols.append("\033[94m.\033[0m")
+            else:
+                row_symbols.append(".")
+
+        row_str = " ".join(row_symbols)
+        lines.append(f" {r:1d}{indent}{row_str}")
+
+    lines.append("└──────────────────────────────────────────┘")
+    return lines
+
+
+def update_dashboard(optimizer: SequentialCSEOptimizer, current_env, board_size: int, extra_info: dict):
+    plotext.clear_terminal()
+
+    unique_anchors = sorted(optimizer.anchor_data.keys())
+    
+    # ── Plot 1: Logistic Win-Rate Curve ──
+    plotext.clf()
+    plotext.plotsize(46, 8)
+
+    if len(unique_anchors) >= 1:
+        x_sims = unique_anchors
+        y_rates = [optimizer.anchor_data[s]["wins"] / max(1, optimizer.anchor_data[s]["games"]) for s in unique_anchors]
+        plotext.scatter(x_sims, y_rates, color="cyan", label="Anchors")
+        plotext.plot([min(x_sims), max(x_sims)], [0.5, 0.5], color="red")
+
+        if len(unique_anchors) >= 2 and optimizer.n50 is not None:
+            min_s = min(x_sims)
+            max_s = max(x_sims)
+            min_bound = min(min_s, optimizer.n50 * 0.6)
+            max_bound = max(max_s, optimizer.n50 * 1.4)
+            sim_grid = np.geomspace(min_bound, max_bound, 50)
+            x_grid = np.log(sim_grid)
+            p_grid = 1.0 / (1.0 + np.exp(-(optimizer.beta0 + optimizer.beta1 * x_grid)))
+            plotext.plot(sim_grid.tolist(), p_grid.tolist(), color="green", label="Sigmoid")
+            plotext.scatter([optimizer.n50], [0.5], color="yellow", marker="x", label="N50")
+            plotext.title(f"Logistic Curve (N50: {optimizer.n50:.1f} | Ratio: {optimizer.ci_ratio:.2f}x)")
+        else:
+            plotext.title("Logistic Win-Rate Curve")
+        plotext.xscale("log")
+    else:
+        plotext.title("Logistic Curve (Sampling...)")
+
+    plotext.ylabel("Win Rate")
+    p1_lines = plotext.build().split("\n")
+
+    # ── Plot 2: Real-time 95% CI Convergence Plot ──
+    plotext.clf()
+    plotext.plotsize(46, 8)
+
+    if len(optimizer.step_history) >= 2:
+        steps = optimizer.step_history
+        upper_line = optimizer.ci_upper_history
+        n50_line = optimizer.n50_history
+        lower_line = optimizer.ci_lower_history
+
+        plotext.plot(steps, upper_line, color="red", label="Upper 95%")
+        plotext.plot(steps, n50_line, color="yellow", marker="sd", label="N50")
+        plotext.plot(steps, lower_line, color="blue", label="Lower 95%")
+        plotext.title(f"95% CI Convergence (Target <= {optimizer.target_ci_ratio:.2f}x)")
+        plotext.xlabel("Evaluation Step")
+        plotext.ylabel("Sims")
+    else:
+        plotext.title("CI Convergence Trajectory")
+        plotext.xlabel("Evaluation Step")
+        plotext.ylabel("Sims")
+
+    p2_lines = plotext.build().split("\n")
+    chart_lines = p1_lines + p2_lines
+    board_lines = render_board_lines(current_env, board_size, extra_info)
+
+    max_l = max(len(chart_lines), len(board_lines))
+    output = []
+    for i in range(max_l):
+        c_line = chart_lines[i] if i < len(chart_lines) else " " * 46
+        b_line = board_lines[i] if i < len(board_lines) else ""
+        output.append(f"{c_line} │ {b_line}")
+
+    print("\n".join(output))
+
+
+async def play_paired_match(
+    board_size: int,
+    muzero_sims: int,
+    classic_sims: int,
+    model,
+    optimizer: SequentialCSEOptimizer,
+    step_num: int,
+    max_steps: int,
+    phase_str: str,
+    input_channels: int,
+    ema_game_time: float,
+    total_muzero_wins_all: int,
+    total_games_all: int
+):
+    """
+    Executes 1 paired match (2 games: Game A MuZero=Red, Game B MuZero=Blue) at classic_sims.
+    """
+    muzero_wins = 0
+    total_games = 2
+    stop_event = asyncio.Event()
+
+    muzero_time_total = 0.0
+    muzero_moves = 0
+    classic_time_total = 0.0
+    classic_moves = 0
+
+    rem_games, rem_sec = optimizer.project_remaining_time(ema_game_time, step_num, max_steps)
+    eta_min = rem_sec / 60.0
+    eta_str = f"{int(rem_sec//60)}:{int(rem_sec%60):02d} min" if rem_sec > 0 else "0:00 min"
+
+    # ── Game A: MuZero = Red (1), Classic = Blue (2) ──
+    env_a = HexEnv(board_size=board_size)
+    latent_mcts_a = LatentMCTS(model=model)
+    classic_mcts_a = ClassicMCTS()
+    move_num = 0
+
+    while env_a.winner == 0:
+        move_num += 1
+        legal = env_a.legal_actions()
+        if not legal:
+            break
+
+        info = {
+            "Phase": phase_str,
+            "Eval Step": f"{step_num} / {max_steps}",
+            "Current Anchor": f"{classic_sims:,} Classic Sims",
+            "Match Game": f"1 / 2 (MuZero = Red)",
+            "Overall Score": f"MuZero {total_muzero_wins_all} - {total_games_all - total_muzero_wins_all} Classic",
+            "95% CI Ratio": f"{optimizer.ci_ratio:.2f}x (Target: <={optimizer.target_ci_ratio:.2f}x)",
+            "Dynamic ETA": f"{eta_str} (EMA: {ema_game_time:.1f}s/game)",
+            "Current Move": f"#{move_num} - {'MuZero (Red)' if env_a.current_player == 1 else 'Classic (Blue)'}"
+        }
+        update_dashboard(optimizer, env_a, board_size, info)
+
+        if env_a.current_player == 1:
+            obs = env_a.get_observation(v5_features=(input_channels == 5))
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            t0 = time.time()
+            root = await latent_mcts_a.search(
+                initial_state_tensor=obs_tensor,
+                legal_actions=legal,
+                num_simulations=muzero_sims,
+                stop_event=stop_event
+            )
+            best_act = max(root.children.items(), key=lambda x: x[1].visit_count)[0]
+            t1 = time.time()
+            muzero_time_total += (t1 - t0)
+            muzero_moves += 1
+            env_a.step(best_act)
+        else:
+            t0 = time.time()
+            best_act, _ = classic_mcts_a.search(env_a, num_simulations=classic_sims)
+            t1 = time.time()
+            classic_time_total += (t1 - t0)
+            classic_moves += 1
+            env_a.step(best_act)
+
+    if env_a.winner == 1:
+        muzero_wins += 1
+
+    # ── Game B: Classic = Red (1), MuZero = Blue (2) ──
+    env_b = HexEnv(board_size=board_size)
+    latent_mcts_b = LatentMCTS(model=model)
+    classic_mcts_b = ClassicMCTS()
+    move_num = 0
+
+    while env_b.winner == 0:
+        move_num += 1
+        legal = env_b.legal_actions()
+        if not legal:
+            break
+
+        info = {
+            "Phase": phase_str,
+            "Eval Step": f"{step_num} / {max_steps}",
+            "Current Anchor": f"{classic_sims:,} Classic Sims",
+            "Match Game": f"2 / 2 (MuZero = Blue)",
+            "Overall Score": f"MuZero {total_muzero_wins_all + muzero_wins} - {total_games_all + 1 - (total_muzero_wins_all + muzero_wins)} Classic",
+            "95% CI Ratio": f"{optimizer.ci_ratio:.2f}x (Target: <={optimizer.target_ci_ratio:.2f}x)",
+            "Dynamic ETA": f"{eta_str} (EMA: {ema_game_time:.1f}s/game)",
+            "Current Move": f"#{move_num} - {'Classic (Red)' if env_b.current_player == 1 else 'MuZero (Blue)'}"
+        }
+        update_dashboard(optimizer, env_b, board_size, info)
+
+        if env_b.current_player == 1:
+            t0 = time.time()
+            best_act, _ = classic_mcts_b.search(env_b, num_simulations=classic_sims)
+            t1 = time.time()
+            classic_time_total += (t1 - t0)
+            classic_moves += 1
+            env_b.step(best_act)
+        else:
+            obs = env_b.get_observation(v5_features=(input_channels == 5))
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            t0 = time.time()
+            root = await latent_mcts_b.search(
+                initial_state_tensor=obs_tensor,
+                legal_actions=legal,
+                num_simulations=muzero_sims,
+                stop_event=stop_event
+            )
+            best_act = max(root.children.items(), key=lambda x: x[1].visit_count)[0]
+            t1 = time.time()
+            muzero_time_total += (t1 - t0)
+            muzero_moves += 1
+            env_b.step(best_act)
+
+    if env_b.winner == 2:
+        muzero_wins += 1
+
+    win_rate = muzero_wins / total_games
+    return win_rate, muzero_wins, total_games, muzero_time_total, muzero_moves, classic_time_total, classic_moves
+
+
+async def main():
+    parser = argparse.ArgumentParser(description="Active Sequential Logistic Arena for MuZero vs Classic MCTS")
+    parser.add_argument("--run-id", type=str, default="v4_clone", help="Run ID for versioned weights")
+    parser.add_argument("--board-size", type=int, default=7)
+    parser.add_argument("--muzero-sims", type=int, default=400)
+    parser.add_argument("--classic-anchors", type=str, default="250,500,1000,2500,5000,10000")
+    parser.add_argument("--games-per-anchor", type=int, default=10)
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
+    
+    # Active Sequential Experiment Design flags
+    parser.add_argument("--adaptive", action="store_true", help="Enable Active Sequential Experiment Design (Fisher Information sampling & automated convergence)")
+    parser.add_argument("--target-ci-ratio", type=float, default=1.30, help="Target ratio of upper/lower 95% confidence bounds to trigger termination")
+    parser.add_argument("--max-eval-steps", type=int, default=30, help="Upper safety cap for paired matches (max games = 2 * steps)")
+    parser.add_argument("--start-sims", type=int, default=5000, help="Initial classic simulation anchor for adaptive hunt")
+    parser.add_argument("--min-sims", type=int, default=500, help="Minimum simulation floor for adaptive hunt")
+    parser.add_argument("--max-sims", type=int, default=150000, help="Maximum simulation ceiling for adaptive hunt")
+    parser.add_argument("--baseline-log-n50", type=float, default=None, help="Previous model checkpoint ln(N_50) for marginal return calculation")
+    args = parser.parse_args()
+
+    board_size = args.board_size
+    action_space_size = board_size ** 2
+    latent_channels = 96
+    num_res_blocks = 8
+
+    # Load weights
+    if args.run_id:
+        weights_path = os.path.join(os.path.dirname(__file__), "runs", args.run_id, "model_weights.pth")
+    else:
+        weights_path = os.path.join(os.path.dirname(__file__), "model_weights.pth")
+
+    if os.path.exists(weights_path):
+        saved_weights = torch.load(weights_path, map_location="cpu")
+        if "prediction.policy_fc.weight" in saved_weights:
+            action_space_size = saved_weights["prediction.policy_fc.weight"].shape[0]
+            board_size = int(math.sqrt(action_space_size))
+        if "representation.conv_init.weight" in saved_weights:
+            latent_channels = saved_weights["representation.conv_init.weight"].shape[0]
+            num_res_blocks = len([k for k in saved_weights.keys() if "representation.res_blocks" in k and "conv1.weight" in k])
+
+        model = MuZeroModels(
+            board_size=board_size,
+            action_space_size=action_space_size,
+            latent_channels=latent_channels,
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
+        )
+        model.load_state_dict(saved_weights)
+        args.board_size = board_size
+    else:
+        model = MuZeroModels(
+            board_size=board_size,
+            action_space_size=action_space_size,
+            latent_channels=latent_channels,
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
+        )
+    model.eval()
+
+    optimizer = SequentialCSEOptimizer(
+        start_sims=args.start_sims,
+        min_sims=args.min_sims,
+        max_sims=args.max_sims,
+        target_ci_ratio=args.target_ci_ratio
+    )
+
+    total_muzero_time = 0.0
+    total_muzero_moves = 0
+    total_classic_time = 0.0
+    total_classic_sims_completed = 0
+    total_muzero_wins = 0
+    total_games = 0
+
+    ema_game_time = 5.0  # Initial EMA estimate in seconds
+    t_start_all = time.time()
+
+    if args.adaptive:
+        print(f"🎯 Starting Active Sequential Experiment Design (Target CI Ratio: <={args.target_ci_ratio:.2f}x)...")
+        for step in range(1, args.max_eval_steps + 1):
+            classic_sims, phase_name = optimizer.get_next_anchor()
+
+            t_match_start = time.time()
+            win_rate, muz_w, games_played, muz_t, muz_m, clas_t, clas_m = await play_paired_match(
+                board_size=args.board_size,
+                muzero_sims=args.muzero_sims,
+                classic_sims=classic_sims,
+                model=model,
+                optimizer=optimizer,
+                step_num=step,
+                max_steps=args.max_eval_steps,
+                phase_str=phase_name,
+                input_channels=args.input_channels,
+                ema_game_time=ema_game_time,
+                total_muzero_wins_all=total_muzero_wins,
+                total_games_all=total_games
+            )
+            t_match_elapsed = time.time() - t_match_start
+
+            # Update rolling EMA of game time
+            match_avg_game_time = t_match_elapsed / max(1, games_played)
+            ema_game_time = 0.3 * match_avg_game_time + 0.7 * ema_game_time
+
+            total_muzero_wins += muz_w
+            total_games += games_played
+            total_muzero_time += muz_t
+            total_muzero_moves += muz_m
+            total_classic_time += clas_t
+            total_classic_sims_completed += (clas_m * classic_sims)
+
+            optimizer.add_match_result(classic_sims, muz_w, games_played, phase_name)
+
+            if optimizer.converged:
+                break
+    else:
+        # Fixed Anchors Mode
+        anchors = [int(x) for x in args.classic_anchors.split(',')]
+        pairs_per_anchor = max(1, args.games_per_anchor // 2)
+        total_steps = len(anchors) * pairs_per_anchor
+        step = 0
+
+        for anchor in anchors:
+            for p in range(pairs_per_anchor):
+                step += 1
+                t_match_start = time.time()
+                win_rate, muz_w, games_played, muz_t, muz_m, clas_t, clas_m = await play_paired_match(
+                    board_size=args.board_size,
+                    muzero_sims=args.muzero_sims,
+                    classic_sims=anchor,
+                    model=model,
+                    optimizer=optimizer,
+                    step_num=step,
+                    max_steps=total_steps,
+                    phase_str="Fixed Anchors",
+                    input_channels=args.input_channels,
+                    ema_game_time=ema_game_time,
+                    total_muzero_wins_all=total_muzero_wins,
+                    total_games_all=total_games
+                )
+                t_match_elapsed = time.time() - t_match_start
+                match_avg_game_time = t_match_elapsed / max(1, games_played)
+                ema_game_time = 0.3 * match_avg_game_time + 0.7 * ema_game_time
+
+                total_muzero_wins += muz_w
+                total_games += games_played
+                total_muzero_time += muz_t
+                total_muzero_moves += muz_m
+                total_classic_time += clas_t
+                total_classic_sims_completed += (clas_m * anchor)
+
+                optimizer.add_match_result(anchor, muz_w, games_played, "Fixed Anchors")
+
+    # ── Final Summary Telemetry Report ──
+    t_elapsed_total = time.time() - t_start_all
+    print(f"\n========================================================================")
+    print(f"📊 ACTIVE SEQUENTIAL EXPERIMENT DESIGN: FINAL TELEMETRY REPORT")
+    print(f"========================================================================")
+    
+    print(f"\n📋 MATCH & ROUND WIN/LOSS RECORDS")
+    print(f"{'Step':<6} {'Phase':<24} {'Anchor':<14} {'Score (M - C)':<16} {'Win Rate':<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+    for r in optimizer.match_history:
+        p_str = f"{r['phase']}"
+        a_str = f"{r['anchor']:,} sims"
+        s_str = f"{r['wins']}W - {r['losses']}L"
+        w_str = f"{r['win_rate']*100:.1f}%"
+        print(f"#{r['step']:<5} {p_str:<24} {a_str:<14} {s_str:<16} {w_str:<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+    overall_wr = (total_muzero_wins / max(1, total_games)) * 100
+    print(f"{'TOTAL':<6} {'All Evaluated Steps':<24} {'Aggregated':<14} {f'{total_muzero_wins}W - {total_games - total_muzero_wins}L':<16} {f'{overall_wr:.1f}%':<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+
+    print(f"\n🎯 AGGREGATED ANCHOR SUPPORT POINTS")
+    print(f"{'Anchor Sims':<16} {'Games Played':<14} {'MuZero Wins':<14} {'Win Rate':<10}")
+    print(f"────────────────────────────────────────────────────────────────────────")
+    for sim in sorted(optimizer.anchor_data.keys()):
+        d = optimizer.anchor_data[sim]
+        wr = (d['wins'] / max(1, d['games'])) * 100
+        print(f"{sim:<16,d} {d['games']:<14d} {d['wins']:<14d} {wr:<9.1f}%")
+    print(f"────────────────────────────────────────────────────────────────────────")
+
+    # Timing Stats
+    t_muzero = total_muzero_time / max(1, total_muzero_moves)
+    t_classic_sim = total_classic_time / max(1, total_classic_sims_completed)
+    crossover = t_muzero / max(1e-9, t_classic_sim)
+
+    print(f"\n⏱️ EXECUTION SPEED & TIMING METRICS")
+    print(f"  • Total Benchmark Time:           {int(t_elapsed_total//60)}m {int(t_elapsed_total%60):02d}s ({total_games} games)")
+    print(f"  • MuZero ({args.muzero_sims} sims):             {t_muzero:.4f} sec/move")
+    print(f"  • Classic MCTS Simulation Time:   {t_classic_sim*1000:.4f} ms/simulation")
+    print(f"  • Wall-Clock Crossover (N_time):  {crossover:.1f} classic simulations")
+
+    # Convergence & CSE Parity
+    cse = optimizer.n50
+    ci_low = optimizer.ci_lower
+    ci_high = optimizer.ci_upper
+    ci_ratio = optimizer.ci_ratio
+
+    print(f"\n🏆 MODEL EFFICIENCY & CONVERGENCE RESULTS")
+    print(f"  • Natural Log Parity (ln N_50):   {optimizer.x0:.4f} ± {optimizer.se_x0:.4f} (SE)")
+    print(f"  • SIMULATION CSE (N_50):          {cse:.1f}")
+    print(f"  • 95% Confidence Interval:        [{ci_low:.1f}, {ci_high:.1f}]")
+    print(f"  • 95% Parameter Uncertainty Ratio:{ci_ratio:.3f}x (Target: <={args.target_ci_ratio:.2f}x)")
+    
+    speedup = (cse * t_classic_sim) / max(1e-9, t_muzero)
+    print(f"  • REALIZED WALL-CLOCK SPEEDUP:    {speedup:.2f}x")
+
+    # Diminishing Returns Index
+    if args.baseline_log_n50 is not None:
+        delta_ln_n50 = optimizer.x0 - args.baseline_log_n50
+        multiplier = math.exp(delta_ln_n50)
+        print(f"\n📈 MARGINAL RETURN & SEARCH EFFICIENCY GAIN")
+        print(f"  • Baseline ln(N_50):              {args.baseline_log_n50:.4f}")
+        print(f"  • Current ln(N_50):               {optimizer.x0:.4f}")
+        print(f"  • Delta ln(N_50):                 {delta_ln_n50:+.4f}")
+        print(f"  • Equivalence Scaling Multiplier: {multiplier:.2f}x over baseline")
+
+    print(f"========================================================================\n")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+
+===== FILE: backend/arena_sprt.py =====
+import argparse
+import asyncio
+import os
+import math
+import torch
+import plotext
+from backend.hex_env import HexEnv
+from backend.muzero_nets import MuZeroModels
+from backend.latent_mcts import LatentMCTS
+from backend.classic_mcts import ClassicMCTS
+
+async def play_single_game(board_size, muzero_sims, classic_sims, model, muzero_color, input_channels=3):
+    env = HexEnv(board_size=board_size)
+    latent_mcts = LatentMCTS(model=model)
+    classic_mcts = ClassicMCTS()
+    stop_event = asyncio.Event()
+
+    while env.winner == 0:
+        legal = env.legal_actions()
+        if not legal:
+            break
+        if env.current_player == muzero_color:
+            obs = env.get_observation(v5_features=(input_channels == 5))
+            obs_tensor = torch.tensor(obs, dtype=torch.float32).unsqueeze(0)
+            root = await latent_mcts.search(
+                initial_state_tensor=obs_tensor,
+                legal_actions=legal,
+                num_simulations=muzero_sims,
+                stop_event=stop_event
+            )
+            best_act = max(root.children.items(), key=lambda x: x[1].visit_count)[0]
+            env.step(best_act)
+        else:
+            best_act, _ = classic_mcts.search(env, num_simulations=classic_sims)
+            env.step(best_act)
+            
+    return 1 if env.winner == muzero_color else 0
+
+async def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--board-size", type=int, default=7)
+    parser.add_argument("--muzero-sims", type=int, default=400)
+    parser.add_argument("--run-id", type=str, default=None, help="Run ID for versioned weights")
+    parser.add_argument("--use-fcn", action="store_true", help="Use Fully Convolutional Prediction Head")
+    parser.add_argument("--input-channels", type=int, default=3, help="Number of input observation channels")
+    args = parser.parse_args()
+
+    board_size = args.board_size
+    action_space_size = board_size ** 2
+    latent_channels = 96
+    num_res_blocks = 8
+
+    if args.run_id:
+        weights_path = os.path.join(os.path.dirname(__file__), "runs", args.run_id, "model_weights.pth")
+    else:
+        weights_path = os.path.join(os.path.dirname(__file__), "model_weights.pth")
+    if os.path.exists(weights_path):
+        saved_weights = torch.load(weights_path, map_location="cpu")
+        if "prediction.policy_fc.weight" in saved_weights:
+            action_space_size = saved_weights["prediction.policy_fc.weight"].shape[0]
+            board_size = int(math.sqrt(action_space_size))
+        if "representation.conv_init.weight" in saved_weights:
+            latent_channels = saved_weights["representation.conv_init.weight"].shape[0]
+            num_res_blocks = len([k for k in saved_weights.keys() if "representation.res_blocks" in k and "conv1.weight" in k])
+        
+        model = MuZeroModels(
+            board_size=board_size,
+            action_space_size=action_space_size,
+            latent_channels=latent_channels,
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
+        )
+        model.load_state_dict(saved_weights)
+    else:
+        model = MuZeroModels(
+            board_size=board_size,
+            action_space_size=action_space_size,
+            latent_channels=latent_channels,
+            num_res_blocks=num_res_blocks,
+            input_channels=args.input_channels,
+            use_fcn=args.use_fcn
+        )
+    model.eval()
+
+    # SPRT Parameters
+    p0 = 0.50
+    p1 = 0.55
+    alpha = 0.05
+    beta = 0.05
+    
+    A = math.log((1 - beta) / alpha)
+    B = math.log(beta / (1 - alpha))
+    
+    llr_win = math.log(p1 / p0)
+    llr_loss = math.log((1 - p1) / (1 - p0))
+
+    llr = 0.0
+    games_played = 0
+    muzero_wins = 0
+
+    llr_history = []
+    game_history = []
+
+    print("Starting SPRT Arena (MuZero vs Random). Press Ctrl+C to abort early.")
+    print(f"H0: MuZero Win Rate <= {p0*100:.0f}%")
+    print(f"H1: MuZero Win Rate >= {p1*100:.0f}%")
+    print(f"Lower Bound (Accept H0): {B:.3f}")
+    print(f"Upper Bound (Accept H1): {A:.3f}\n")
+
+    try:
+        while True:
+            # Alternate first-mover advantage
+            muzero_color = 1 if games_played % 2 == 0 else 2
+            
+            win = await play_single_game(
+                board_size=board_size,
+                muzero_sims=args.muzero_sims,
+                classic_sims=1,
+                model=model,
+                muzero_color=muzero_color,
+                input_channels=args.input_channels
+            )
+            
+            muzero_wins += win
+            games_played += 1
+            
+            if win == 1:
+                llr += llr_win
+            else:
+                llr += llr_loss
+                
+            game_history.append(games_played)
+            llr_history.append(llr)
+
+            plotext.clear_terminal()
+            plotext.clear_data()
+            plotext.scatter(game_history, llr_history, color="cyan", marker="dot")
+            plotext.plot([0, max(10, games_played)], [A, A], color="green")
+            plotext.plot([0, max(10, games_played)], [B, B], color="red")
+            plotext.title(f"SPRT LLR Trace (Games: {games_played}, Wins: {muzero_wins})")
+            plotext.xlabel("Games Played")
+            plotext.ylabel("Log-Likelihood Ratio (LLR)")
+            plotext.show()
+
+            print(f"\nGames: {games_played} | MuZero Wins: {muzero_wins} | Win Rate: {(muzero_wins/games_played)*100:.1f}%")
+            print(f"Current LLR: {llr:.3f} | Bounds: [{B:.3f}, {A:.3f}]")
+
+            if llr >= A:
+                print(f"\n[SPRT COMPLETE] H1 ACCEPTED!")
+                print(f"Mathematical Proof: Latent MCTS is statistically SIGNIFICANTLY BETTER than chance (>{p1*100}% win rate).")
+                break
+            elif llr <= B:
+                print(f"\n[SPRT COMPLETE] H0 ACCEPTED!")
+                print(f"Mathematical Proof: Latent MCTS is performing NO BETTER than chance (random play).")
+                break
+
+    except KeyboardInterrupt:
+        print("\nSPRT stopped early by user.")
+
+if __name__ == "__main__":
+    asyncio.run(main())
+===== FILE: backend/verify_v5.py =====
+import os
+import sys
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from muzero_nets import MuZeroModels
+
+def main():
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    root_dir = os.path.abspath(os.path.join(base_dir, '..'))
+    eval_file = os.path.join(root_dir, 'v5_eval.txt')
+    
+    print("Initializing V5 Fully Convolutional Architecture...")
+    model = MuZeroModels(
+        board_size=7, 
+        latent_channels=96, 
+        num_res_blocks=8, 
+        input_channels=5, 
+        use_fcn=True
+    )
+    
+    dummy_obs = torch.randn(1, 5, 7, 7)
+    
+    print("Running initial inference on dummy observation...")
+    value, reward, policy_logits, latent_state = model.initial_inference(dummy_obs)
+    
+    print(f"policy_logits shape: {policy_logits.shape}")
+    print(f"value shape: {value.shape}")
+    print(f"latent_state shape: {latent_state.shape}")
+    
+    assert policy_logits.shape == (1, 49), f"Expected policy shape (1, 49), got {policy_logits.shape}"
+    assert value.shape == (1, 1), f"Expected value shape (1, 1), got {value.shape}"
+    assert latent_state.shape == (1, 96, 7, 7), f"Expected latent shape (1, 96, 7, 7), got {latent_state.shape}"
+    
+    output_text = "--- V5 FCN Architecture Verification ---\n"
+    output_text += f"Policy Logits Shape: {policy_logits.shape}\n"
+    output_text += f"Value Shape: {value.shape}\n"
+    output_text += f"Latent State Shape: {latent_state.shape}\n\n"
+    output_text += "[Network Summary]\n"
+    output_text += str(model) + "\n\n"
+    output_text += "SUCCESS: Shapes verified!\n"
+    
+    with open(eval_file, "w") as f:
+        f.write(output_text)
+        
+    print(f"Saved evaluation to {eval_file}")
+    
+if __name__ == "__main__":
+    main()
